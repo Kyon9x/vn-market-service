@@ -167,3 +167,29 @@ class FundClient:
         except Exception as e:
             logger.error(f"Error fetching latest NAV for {symbol}: {e}")
             return None
+    
+    def search_funds_by_name(self, query: str, limit: int = 10) -> List[Dict]:
+        """Search funds by partial name or symbol match (case-insensitive)."""
+        try:
+            funds = self.get_funds_list()
+            query_lower = query.lower()
+            results = []
+            
+            for fund in funds:
+                symbol = fund.get("symbol", "")
+                fund_name = fund.get("fund_name", "")
+                
+                # Match on symbol or fund name
+                if query_lower in symbol.lower() or query_lower in fund_name.lower():
+                    results.append({
+                        "symbol": symbol,
+                        "fund_name": fund_name,
+                        "asset_type": "MUTUAL_FUND"
+                    })
+                    if len(results) >= limit:
+                        break
+            
+            return results
+        except Exception as e:
+            logger.error(f"Error searching funds by name '{query}': {e}")
+            return []

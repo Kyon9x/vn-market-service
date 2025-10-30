@@ -6,18 +6,18 @@
 cd "$(dirname "$0")"
 
 # Check if service is already running
-if lsof -i :8765 > /dev/null 2>&1; then
-    echo "VN Market Service is already running on port 8765"
-    exit 0
+if lsof -i :8765 >/dev/null 2>&1; then
+  echo "VN Market Service is already running on port 8765"
+  exit 0
 fi
 
 # Determine which Python to use (prefer .venv, fallback to venv, then system python3)
 if [ -d ".venv" ]; then
-    PYTHON_BIN=".venv/bin/python"
+  PYTHON_BIN=".venv/bin/python"
 elif [ -d "venv" ]; then
-    PYTHON_BIN="venv/bin/python"
+  PYTHON_BIN="venv/bin/python"
 else
-    PYTHON_BIN="python3"
+  PYTHON_BIN="python3"
 fi
 
 # Start the service (using exec to replace the shell process)

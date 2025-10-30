@@ -119,6 +119,8 @@ class SearchResponse(BaseModel):
 class GoldSearchResponse(BaseModel):
     symbol: str
     name: str
+    provider: str
+    provider_name: str
     asset_type: str
     exchange: str
     currency: str = "VND"

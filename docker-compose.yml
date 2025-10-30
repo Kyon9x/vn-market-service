@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  vn-market-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vn-market-service
+    ports:
+      - "8765:8765"
+    environment:
+      - VN_MARKET_SERVICE_HOST=0.0.0.0
+      - VN_MARKET_SERVICE_PORT=8765
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

@@ -292,22 +292,68 @@ async def get_index_history(
         logger.error(f"Error in get_index_history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/gold/search/VN_GOLD", response_model=GoldSearchResponse)
-async def search_gold():
+@app.get("/gold/search/{symbol}", response_model=GoldSearchResponse, tags=["Gold"])
+async def search_gold(symbol: str):
+    """
+    Search for gold asset information by provider symbol.
+    
+    **Supported providers:**
+    - SJC: `VN_GOLD`, `VN_GOLD_SJC`, `SJC_GOLD`, `SJC`
+    - BTMC: `VN_GOLD_BTMC`, `BTMC_GOLD`, `BTMC`
+    - MSN: `GOLD_MSN`, `GOLD`, `MSN_GOLD`
+    
+    **Backward compatible:** `VN_GOLD` defaults to SJC provider.
+    
+    Args:
+        symbol: Gold provider symbol (case-insensitive)
+        
+    Returns:
+        GoldSearchResponse with provider information
+        
+    Raises:
+        404: Provider symbol not found
+        500: API error
+    """
     try:
-        gold_info = gold_client.search_gold()
+        gold_info = gold_client.search_gold(symbol)
+        if not gold_info:
+            raise HTTPException(status_code=404, detail=f"Gold provider {symbol} not found")
         return GoldSearchResponse(**gold_info)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in search_gold: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/gold/quote/VN_GOLD", response_model=GoldQuoteResponse)
-async def get_gold_quote():
+@app.get("/gold/quote/{symbol}", response_model=GoldQuoteResponse, tags=["Gold"])
+async def get_gold_quote(symbol: str):
+    """
+    Get the latest gold price quote from a specific provider.
+    
+    **Provider symbols:**
+    - SJC: `VN_GOLD`, `VN_GOLD_SJC`, `SJC_GOLD`, `SJC`
+    - BTMC: `VN_GOLD_BTMC`, `BTMC_GOLD`, `BTMC`
+    - MSN: `GOLD_MSN`, `GOLD`, `MSN_GOLD`
+    
+    **Response includes:**
+    - SJC/BTMC: buy_price and sell_price (prices per tael in VND)
+    - MSN: close price (global commodity price)
+    
+    Args:
+        symbol: Gold provider symbol (case-insensitive)
+        
+    Returns:
+        GoldQuoteResponse with latest price data
+        
+    Raises:
+        404: Provider symbol not found or quote unavailable
+        500: API error
+    """
     try:
-        quote = gold_client.get_latest_quote()
+        quote = gold_client.get_latest_quote(symbol)
         
         if not quote:
-            raise HTTPException(status_code=404, detail="Gold quote not found")
+            raise HTTPException(status_code=404, detail=f"Gold quote for {symbol} not found")
         
         return GoldQuoteResponse(**quote)
     except HTTPException:
@@ -316,11 +362,39 @@ async def get_gold_quote():
         logger.error(f"Error in get_gold_quote: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/gold/history/VN_GOLD", response_model=GoldHistoryResponse)
+@app.get("/gold/history/{symbol}", response_model=GoldHistoryResponse, tags=["Gold"])
 async def get_gold_history(
-    start_date: str = Query(None, description="Start date in YYYY-MM-DD format"),
-    end_date: str = Query(None, description="End date in YYYY-MM-DD format")
+    symbol: str,
+    start_date: str = Query(None, description="Start date in YYYY-MM-DD format (default: 1 year ago)"),
+    end_date: str = Query(None, description="End date in YYYY-MM-DD format (default: today)")
 ):
+    """
+    Get historical gold price data for a specific provider.
+    
+    **Provider symbols:**
+    - SJC: `VN_GOLD`, `VN_GOLD_SJC`, `SJC_GOLD`, `SJC`
+    - BTMC: `VN_GOLD_BTMC`, `BTMC_GOLD`, `BTMC`
+    - MSN: `GOLD_MSN`, `GOLD`, `MSN_GOLD`
+    
+    **Default date range:** Last 365 days (if not specified)
+    
+    **Historical data includes:**
+    - SJC/BTMC: Daily buy_price and sell_price
+    - MSN: Full OHLCV candle data (Open, High, Low, Close, Volume)
+    
+    Args:
+        symbol: Gold provider symbol (case-insensitive)
+        start_date: Start date in YYYY-MM-DD format (optional)
+        end_date: End date in YYYY-MM-DD format (optional)
+        
+    Returns:
+        GoldHistoryResponse with historical price data
+        
+    Raises:
+        400: Invalid date format
+        404: Provider symbol not found or no history available
+        500: API error
+    """
     try:
         if not end_date:
             end_date = datetime.now().strftime("%Y-%m-%d")
@@ -337,16 +411,16 @@ async def get_gold_history(
                 detail="Invalid date format. Use YYYY-MM-DD"
             )
         
-        history = gold_client.get_gold_history(start_date, end_date)
+        history = gold_client.get_gold_history(symbol, start_date, end_date)
         
         if not history:
             raise HTTPException(
                 status_code=404,
-                detail="No history found for VN_GOLD"
+                detail=f"No history found for {symbol}"
             )
         
         return GoldHistoryResponse(
-            symbol="VN_GOLD",
+            symbol=symbol,
             history=history
         )
     except HTTPException:
@@ -356,46 +430,22 @@ async def get_gold_history(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/search", response_model=SearchResponse)
-async def search_assets(query: str = Query(..., description="Search query for stocks, funds, or indices")):
+async def search_assets(
+    query: str = Query(..., description="Search query by symbol or name for stocks, funds, indices, or gold"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of results to return (default: 20)")
+):
     try:
         query_upper = query.upper()
         query_lower = query.lower()
         results = []
+        exact_matches = []
+        partial_matches = []
         
-        # Check for VN_GOLD queries - normalize various formats
-        gold_patterns = ["vn gold", "vn_gold", "vngold", "gold vn", "vietnam gold", "sjc gold"]
-        query_normalized = query_lower.replace("_", " ").replace("-", " ").strip()
-        
-        # Match "gold" alone or any of the patterns
-        if query_normalized == "gold" or any(pattern in query_normalized for pattern in gold_patterns):
-            results.append(SearchResult(
-                symbol="VN_GOLD",
-                name="SJC Gold Price",
-                asset_type="COMMODITY",
-                exchange="VN",
-                currency="VND",
-                data_source="VN_MARKET"
-            ))
-        
-        # Known Vietnamese indices
-        indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
-        matching_indices = [idx for idx in indices if query_upper in idx]
-        
-        for idx in matching_indices:
-            results.append(SearchResult(
-                symbol=idx,
-                name=f"Vietnam {idx} Index",
-                asset_type="INDEX",
-                exchange="HOSE" if idx.startswith("VN") else "HNX",
-                currency="VND",
-                data_source="VN_MARKET"
-            ))
-        
-        # Search stocks
+        # Search stocks by symbol (exact match first)
         try:
             stock_info = stock_client.search_stock(query_upper)
             if stock_info:
-                results.append(SearchResult(
+                exact_matches.append(SearchResult(
                     symbol=stock_info["symbol"],
                     name=stock_info["company_name"],
                     asset_type="STOCK",
@@ -403,15 +453,31 @@ async def search_assets(query: str = Query(..., description="Search query for st
                     currency="VND",
                     data_source="VN_MARKET"
                 ))
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Error searching stock by symbol: {e}")
         
-        # Search funds
+        # Search stocks by name (partial match)
         try:
-            funds = fund_client.get_funds_list()
+            stocks = stock_client.search_stocks_by_name(query_lower, limit=10)
+            for stock in stocks:
+                partial_matches.append(SearchResult(
+                    symbol=stock["symbol"],
+                    name=stock["company_name"],
+                    asset_type="STOCK",
+                    exchange=stock.get("exchange", "HOSE"),
+                    currency="VND",
+                    data_source="VN_MARKET"
+                ))
+        except Exception as e:
+            logger.debug(f"Error searching stocks by name: {e}")
+        
+        # Search funds by symbol and name
+        try:
+            funds = fund_client.search_funds_by_name(query_lower, limit=10)
             for fund in funds:
-                if query_lower in fund["symbol"].lower() or query_lower in fund["fund_name"].lower():
-                    results.append(SearchResult(
+                # Check if exact symbol match
+                if fund["symbol"].upper() == query_upper:
+                    exact_matches.append(SearchResult(
                         symbol=fund["symbol"],
                         name=fund["fund_name"],
                         asset_type="FUND",
@@ -419,12 +485,91 @@ async def search_assets(query: str = Query(..., description="Search query for st
                         currency="VND",
                         data_source="VN_MARKET"
                     ))
-                    if len(results) >= 20:
-                        break
-        except:
-            pass
+                else:
+                    partial_matches.append(SearchResult(
+                        symbol=fund["symbol"],
+                        name=fund["fund_name"],
+                        asset_type="FUND",
+                        exchange="VN",
+                        currency="VND",
+                        data_source="VN_MARKET"
+                    ))
+        except Exception as e:
+            logger.debug(f"Error searching funds: {e}")
         
-        return SearchResponse(results=results, total=len(results))
+        # Search indices
+        indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
+        for idx in indices:
+            if query_upper == idx:
+                exact_matches.append(SearchResult(
+                    symbol=idx,
+                    name=f"Vietnam {idx} Index",
+                    asset_type="INDEX",
+                    exchange="HOSE" if idx.startswith("VN") else "HNX",
+                    currency="VND",
+                    data_source="VN_MARKET"
+                ))
+            elif query_upper in idx or idx in query_upper:
+                partial_matches.append(SearchResult(
+                    symbol=idx,
+                    name=f"Vietnam {idx} Index",
+                    asset_type="INDEX",
+                    exchange="HOSE" if idx.startswith("VN") else "HNX",
+                    currency="VND",
+                    data_source="VN_MARKET"
+                ))
+        
+        # Search gold - check for gold-related queries
+        gold_patterns = ["gold", "vn gold", "vn_gold", "vngold", "sjc", "btmc", "msn"]
+        query_normalized = query_lower.replace("_", " ").replace("-", " ").strip()
+        is_gold_query = query_normalized == "gold" or any(pattern in query_normalized for pattern in gold_patterns)
+        
+        if is_gold_query:
+            try:
+                gold_providers = gold_client.get_all_gold_providers()
+                for provider in gold_providers:
+                    partial_matches.append(SearchResult(
+                        symbol=provider["symbol"],
+                        name=provider["name"],
+                        asset_type=provider["asset_type"],
+                        exchange=provider["exchange"],
+                        currency=provider["currency"],
+                        data_source="VN_MARKET"
+                    ))
+            except Exception as e:
+                logger.debug(f"Error searching gold providers: {e}")
+        else:
+            # Try to match specific gold symbol
+            try:
+                gold_info = gold_client.search_gold(query_upper)
+                if gold_info:
+                    exact_matches.append(SearchResult(
+                        symbol=gold_info["symbol"],
+                        name=gold_info["name"],
+                        asset_type=gold_info["asset_type"],
+                        exchange=gold_info["exchange"],
+                        currency=gold_info["currency"],
+                        data_source="VN_MARKET"
+                    ))
+            except Exception as e:
+                logger.debug(f"Error searching gold by symbol: {e}")
+        
+        # Combine results: exact matches first, then partial matches
+        results = exact_matches + partial_matches
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_results = []
+        for result in results:
+            key = (result.symbol, result.asset_type)
+            if key not in seen:
+                seen.add(key)
+                unique_results.append(result)
+        
+        # Limit results
+        final_results = unique_results[:limit]
+        
+        return SearchResponse(results=final_results, total=len(final_results))
     except Exception as e:
         logger.error(f"Error in search_assets: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -444,22 +589,19 @@ async def get_history(
         if not start_date:
             start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
         
-        # Handle VN_GOLD
-        if symbol == "VN_GOLD":
-            history = gold_client.get_gold_history(start_date, end_date)
+        # Handle gold symbols
+        try:
+            history = gold_client.get_gold_history(symbol, start_date, end_date)
             
-            if not history:
-                raise HTTPException(
-                    status_code=404,
-                    detail="No history found for VN_GOLD"
-                )
-            
-            return {
-                "symbol": "VN_GOLD",
-                "history": history,
-                "currency": "VND",
-                "data_source": "VN_MARKET"
-            }
+            if history:
+                return {
+                    "symbol": symbol,
+                    "history": history,
+                    "currency": "VND",
+                    "data_source": "VN_MARKET"
+                }
+        except:
+            pass
         
         indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
         if symbol in indices:
@@ -500,14 +642,13 @@ async def search_asset(symbol: str):
     try:
         symbol_upper = symbol.upper()
         
-        # Handle VN_GOLD
-        if symbol_upper == "VN_GOLD":
-            return {
-                "symbol": "VN_GOLD",
-                "fund_name": "SJC Gold Price",
-                "currency": "VND",
-                "data_source": "VN_MARKET"
-            }
+        # Handle gold symbols
+        try:
+            gold_info = gold_client.search_gold(symbol)
+            if gold_info:
+                return gold_info
+        except:
+            pass
         
         indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
         if symbol_upper in indices:

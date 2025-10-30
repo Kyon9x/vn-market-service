@@ -13,6 +13,7 @@ REST endpoints that the Rust core can consume. It supports stocks, mutual funds,
 - ✅ **Stocks**: Search, quotes, and historical data for Vietnamese stocks
 - ✅ **Mutual Funds**: List, search, quotes, and historical NAV data
 - ✅ **Indices**: Quotes and historical data for Vietnamese market indices
+- ✅ **Gold**: Multi-provider support (SJC, BTMC, MSN) with search, quotes, and history
 - ✅ 24-hour caching for fund listings
 - ✅ NAV-to-OHLC mapping for chart compatibility
 - ✅ CORS enabled for Tauri integration
@@ -290,6 +291,220 @@ GET /indices/history/{symbol}?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
   "currency": "VND",
   "data_source": "VN_MARKET"
 }
+```
+
+### Gold (Multi-Provider)
+
+Supports 3 gold providers: **SJC** (Saigon Jewelry Company), **BTMC** (Bao Tin Minh Chau), and
+**MSN** (Global Commodity).
+
+**Supported Symbols:**
+
+| Provider | Symbols |
+|----------|---------|
+| **SJC** | `VN_GOLD`, `VN_GOLD_SJC`, `SJC_GOLD`, `SJC` |
+| **BTMC** | `VN_GOLD_BTMC`, `BTMC_GOLD`, `BTMC` |
+| **MSN** | `GOLD_MSN`, `GOLD`, `MSN_GOLD` |
+
+#### Search Gold
+
+```
+GET /gold/search/{symbol}
+```
+
+**Examples:**
+
+```
+GET /gold/search/VN_GOLD_SJC    # SJC provider
+GET /gold/search/BTMC_GOLD      # BTMC provider
+GET /gold/search/GOLD_MSN       # MSN provider
+GET /gold/search/VN_GOLD        # Backward compatible (defaults to SJC)
+```
+
+**Response:**
+
+```json
+{
+  "symbol": "VN_GOLD_SJC",
+  "name": "Gold - Saigon Jewelry Company",
+  "provider": "sjc",
+  "provider_name": "Saigon Jewelry Company",
+  "asset_type": "Commodity",
+  "exchange": "SJC",
+  "currency": "VND",
+  "data_source": "VN_MARKET"
+}
+```
+
+#### Get Gold Quote
+
+```
+GET /gold/quote/{symbol}
+```
+
+**Examples:**
+
+```
+GET /gold/quote/VN_GOLD_SJC     # SJC: Buy/Sell prices
+GET /gold/quote/BTMC_GOLD       # BTMC: Buy/Sell prices
+GET /gold/quote/GOLD_MSN        # MSN: Close price
+```
+
+**Response (SJC):**
+
+```json
+{
+  "symbol": "VN_GOLD_SJC",
+  "close": 84500000,
+  "date": "2024-10-26",
+  "buy_price": 84000000,
+  "sell_price": 86500000,
+  "currency": "VND",
+  "data_source": "VN_MARKET"
+}
+```
+
+**Response (MSN):**
+
+```json
+{
+  "symbol": "GOLD_MSN",
+  "close": 2100000,
+  "date": "2024-10-26",
+  "currency": "VND",
+  "data_source": "VN_MARKET"
+}
+```
+
+#### Get Gold History
+
+```
+GET /gold/history/{symbol}?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+```
+
+**Examples:**
+
+```
+GET /gold/history/VN_GOLD_SJC?start_date=2024-10-01&end_date=2024-10-26
+GET /gold/history/BTMC_GOLD?start_date=2024-10-01&end_date=2024-10-26
+GET /gold/history/GOLD_MSN?start_date=2024-10-01&end_date=2024-10-26
+```
+
+**Response:**
+
+```json
+{
+  "symbol": "VN_GOLD_SJC",
+  "history": [
+    {
+      "date": "2024-10-26",
+      "nav": 84500000,
+      "open": 84500000,
+      "high": 84500000,
+      "low": 84500000,
+      "close": 84500000,
+      "adjclose": 84500000,
+      "volume": 0.0,
+      "buy_price": 84000000,
+      "sell_price": 86500000
+    }
+  ],
+  "currency": "VND",
+  "data_source": "VN_MARKET"
+}
+```
+
+### Search & History (Generic Endpoints)
+
+#### Search Any Asset by Symbol
+
+```
+GET /search/{symbol}
+```
+
+**Examples:**
+
+```
+GET /search/VNM           # Stock
+GET /search/VFMVF1        # Fund
+GET /search/VNINDEX       # Index
+GET /search/VN_GOLD_SJC   # Gold (SJC)
+GET /search/BTMC_GOLD     # Gold (BTMC)
+```
+
+#### Search All Assets by Query
+
+```
+GET /search?query={query}
+```
+
+**Examples:**
+
+```
+GET /search?query=gold              # Returns all 3 gold providers
+GET /search?query=vnm               # Stock and gold results
+GET /search?query=vn-index          # Index results
+```
+
+#### Get Any Asset History
+
+```
+GET /history/{symbol}?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+```
+
+**Examples:**
+
+```
+GET /history/VNM?start_date=2024-10-01&end_date=2024-10-26                    # Stock
+GET /history/VFMVF1?start_date=2024-10-01&end_date=2024-10-26                 # Fund
+GET /history/VNINDEX?start_date=2024-10-01&end_date=2024-10-26                # Index
+GET /history/GOLD_MSN?start_date=2024-10-01&end_date=2024-10-26               # Gold (MSN)
+```
+
+## Gold API Provider Information
+
+### About Gold Providers
+
+The Gold API supports three independent gold price providers:
+
+| Provider | API Source | Data | Fallback |
+|----------|-----------|------|----------|
+| **SJC** | vnstock `sjc_gold_price()` | Buy/Sell prices in VND per tael | 84M/86.5M VND |
+| **BTMC** | vnstock `btmc_goldprice()` | Buy/Sell prices, karat details | 82M/85M VND |
+| **MSN** | vnstock `world_index(symbol='GOLD', source='MSN')` | OHLCV global commodity prices | ~2.1M VND |
+
+### Backward Compatibility
+
+✅ **Full backward compatibility maintained!**
+
+- Old code using `VN_GOLD` continues to work without changes
+- Automatically routes to SJC provider (primary Vietnamese gold)
+- Gradual migration to explicit provider symbols recommended
+
+**Migration Examples:**
+
+```bash
+# Old (still works)
+GET /gold/quote/VN_GOLD
+
+# New (recommended - explicit provider)
+GET /gold/quote/VN_GOLD_SJC
+```
+
+### Quick Start: Gold Price Monitoring
+
+```bash
+# Get current SJC gold price
+curl http://127.0.0.1:8765/gold/quote/VN_GOLD_SJC
+
+# Get current BTMC gold price
+curl http://127.0.0.1:8765/gold/quote/BTMC_GOLD
+
+# Get 30-day SJC history
+curl "http://127.0.0.1:8765/gold/history/VN_GOLD_SJC?start_date=$(date -d '30 days ago' +%Y-%m-%d)&end_date=$(date +%Y-%m-%d)"
+
+# Search all gold providers
+curl "http://127.0.0.1:8765/search?query=gold"
 ```
 
 ## Configuration

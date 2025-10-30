@@ -101,3 +101,34 @@ class StockClient:
         except Exception as e:
             logger.error(f"Error searching stock {symbol}: {e}")
             return None
+    
+    def search_stocks_by_name(self, query: str, limit: int = 10) -> List[Dict]:
+        """Search stocks by partial name match (case-insensitive)."""
+        try:
+            companies_df = self._listing.all_symbols()
+            if companies_df is None or companies_df.empty:
+                return []
+            
+            query_lower = query.lower()
+            results = []
+            
+            for _, row in companies_df.iterrows():
+                symbol = str(row.get("symbol", ""))
+                company_name = str(row.get("organ_name", ""))
+                
+                # Match on symbol or company name
+                if query_lower in symbol.lower() or query_lower in company_name.lower():
+                    results.append({
+                        "symbol": symbol,
+                        "company_name": company_name,
+                        "exchange": "HOSE",
+                        "industry": "",
+                        "company_type": ""
+                    })
+                    if len(results) >= limit:
+                        break
+            
+            return results
+        except Exception as e:
+            logger.error(f"Error searching stocks by name '{query}': {e}")
+            return []
