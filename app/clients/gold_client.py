@@ -110,7 +110,7 @@ class GoldClient:
                                 "high": price,
                                 "low": price,
                                 "close": price,
-                                "adjclose": price,
+                                "adjclose": 0,
                                 "volume": 0.0,
                                 "buy_price": buy_price,
                                 "sell_price": sell_price
@@ -130,7 +130,7 @@ class GoldClient:
                     "high": price,
                     "low": price,
                     "close": price,
-                    "adjclose": price,
+                    "adjclose": 0,
                     "volume": 0.0,
                     "buy_price": fallback["buy_price"],
                     "sell_price": fallback["sell_price"]
@@ -172,7 +172,7 @@ class GoldClient:
                                 "high": price,
                                 "low": price,
                                 "close": price,
-                                "adjclose": price,
+                                "adjclose": 0,
                                 "volume": 0.0,
                                 "buy_price": buy_price,
                                 "sell_price": sell_price
@@ -301,12 +301,18 @@ class GoldClient:
             sell_price = float(info.get("sell_price", 0.0)) if not pd.isna(info.get("sell_price")) else 0.0
             close_price = sell_price if sell_price > 0 else buy_price
             
+            # For gold, we'll set OHLC values to the close price since gold typically trades at a single price
             return {
                 "symbol": symbol,
+                "open": close_price,
+                "high": close_price,
+                "low": close_price,
                 "close": close_price,
-                "date": date_str,
+                "adjclose": close_price,
+                "volume": 0.0,  # Gold typically doesn't have volume data in this context
                 "buy_price": buy_price,
                 "sell_price": sell_price,
+                "date": date_str,
                 "currency": "VND"
             }
         except Exception as e:
@@ -317,13 +323,20 @@ class GoldClient:
         """Return fallback SJC gold prices."""
         today = datetime.now().strftime("%Y-%m-%d")
         fallback = self.fallback_prices["sjc"]
+        sell_price = fallback["sell_price"]
         
+        # For gold, we'll set OHLC values to the sell price since gold typically trades at a single price
         return {
             "symbol": symbol,
-            "close": fallback["sell_price"],
-            "date": today,
+            "open": sell_price,
+            "high": sell_price,
+            "low": sell_price,
+            "close": sell_price,
+            "adjclose": sell_price,
+            "volume": 0.0,  # Gold typically doesn't have volume data in this context
             "buy_price": fallback["buy_price"],
-            "sell_price": fallback["sell_price"],
+            "sell_price": sell_price,
+            "date": today,
             "currency": "VND"
         }
     
@@ -344,12 +357,18 @@ class GoldClient:
             sell_price = float(info.get("sell_price", 0.0)) if not pd.isna(info.get("sell_price")) else 0.0
             close_price = sell_price if sell_price > 0 else buy_price
             
+            # For gold, we'll set OHLC values to the close price since gold typically trades at a single price
             return {
                 "symbol": symbol,
+                "open": close_price,
+                "high": close_price,
+                "low": close_price,
                 "close": close_price,
-                "date": date_str,
+                "adjclose": close_price,
+                "volume": 0.0,  # Gold typically doesn't have volume data in this context
                 "buy_price": buy_price,
                 "sell_price": sell_price,
+                "date": date_str,
                 "currency": "VND"
             }
         except Exception as e:
@@ -360,13 +379,20 @@ class GoldClient:
         """Return fallback BTMC gold prices."""
         today = datetime.now().strftime("%Y-%m-%d")
         fallback = self.fallback_prices["btmc"]
+        sell_price = fallback["sell_price"]
         
+        # For gold, we'll set OHLC values to the sell price since gold typically trades at a single price
         return {
             "symbol": symbol,
-            "close": fallback["sell_price"],
-            "date": today,
+            "open": sell_price,
+            "high": sell_price,
+            "low": sell_price,
+            "close": sell_price,
+            "adjclose": sell_price,
+            "volume": 0.0,  # Gold typically doesn't have volume data in this context
             "buy_price": fallback["buy_price"],
-            "sell_price": fallback["sell_price"],
+            "sell_price": sell_price,
+            "date": today,
             "currency": "VND"
         }
     
@@ -387,9 +413,20 @@ class GoldClient:
             latest = df.iloc[-1]
             date_str = pd.to_datetime(latest['time']).strftime("%Y-%m-%d") if 'time' in latest else datetime.now().strftime("%Y-%m-%d")
             
+            open_val = float(latest.get('open', 0.0))
+            high_val = float(latest.get('high', 0.0))
+            low_val = float(latest.get('low', 0.0))
+            close_val = float(latest.get('close', 0.0))
+            volume_val = float(latest.get('volume', 0.0))
+            
             return {
                 "symbol": symbol,
-                "close": float(latest.get('close', 0.0)),
+                "open": open_val,
+                "high": high_val,
+                "low": low_val,
+                "close": close_val,
+                "adjclose": close_val,  # For commodities, adjclose is typically the same as close
+                "volume": volume_val,
                 "date": date_str,
                 "currency": "USD"
             }
@@ -401,10 +438,17 @@ class GoldClient:
         """Return fallback MSN gold prices."""
         today = datetime.now().strftime("%Y-%m-%d")
         fallback = self.fallback_prices["msn"]
+        close_price = fallback["close"]
         
+        # For gold commodity, we'll set OHLC values to the close price for fallback
         return {
             "symbol": symbol,
-            "close": fallback["close"],
+            "open": close_price,
+            "high": close_price,
+            "low": close_price,
+            "close": close_price,
+            "adjclose": close_price,
+            "volume": 0.0,  # No volume data in fallback
             "date": today,
             "currency": "USD"
         }

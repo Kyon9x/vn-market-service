@@ -159,9 +159,18 @@ class FundClient:
                 date_str = str(date_val) if date_val else datetime.now().strftime("%Y-%m-%d")
             
             nav_value = info.get("nav_per_unit", 0.0)
+            nav_float = float(nav_value) if nav_value else 0.0
+            
+            # For funds, we'll set OHLC values to the NAV since that's the primary price metric
             return {
                 "symbol": symbol,
-                "nav": float(nav_value) if nav_value else 0.0,
+                "open": nav_float,
+                "high": nav_float,
+                "low": nav_float,
+                "close": nav_float,
+                "adjclose": nav_float,
+                "volume": 0.0,  # Funds typically don't have volume data
+                "nav": nav_float,
                 "date": date_str
             }
         except Exception as e:

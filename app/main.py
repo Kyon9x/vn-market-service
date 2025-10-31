@@ -39,6 +39,75 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def validate_asset_classification(asset_type: str, asset_class: str, asset_sub_class: str) -> bool:
+    """
+    Validate that the asset classification is correct based on the asset type.
+    
+    Args:
+        asset_type: The type of asset (STOCK, FUND, INDEX, GOLD, etc.)
+        asset_class: The asset class
+        asset_sub_class: The asset sub-class
+        
+    Returns:
+        bool: True if validation passes, False otherwise
+    """
+    asset_type = asset_type.upper()
+    
+    if asset_type == "STOCK":
+        return asset_class == "Equity" and asset_sub_class == "Stock"
+    elif asset_type == "FUND":
+        return asset_class == "Investment Fund" and asset_sub_class == "Mutual Fund"
+    elif asset_type == "INDEX":
+        return asset_class == "Index" and asset_sub_class == "Market Index"
+    elif asset_type == "GOLD":
+        return asset_class == "Commodity" and asset_sub_class == "Precious Metal"
+    else:
+        # For other asset types, we'll allow any classification
+        return True
+
+
+def validate_response_fields(response: dict, expected_asset_type: str) -> bool:
+    """
+    Validate that the response contains all required fields with correct values.
+    
+    Args:
+        response: The response dictionary to validate
+        expected_asset_type: The expected asset type
+        
+    Returns:
+        bool: True if validation passes, False otherwise
+    """
+    required_fields = ["asset_class", "asset_sub_class", "currency", "data_source"]
+    
+    # Check that all required fields are present
+    for field in required_fields:
+        if field not in response:
+            logger.warning(f"Missing required field: {field}")
+            return False
+    
+    # Validate asset classification
+    if not validate_asset_classification(
+        expected_asset_type, 
+        response.get("asset_class", ""), 
+        response.get("asset_sub_class", "")
+    ):
+        logger.warning(f"Invalid asset classification for {expected_asset_type}")
+        return False
+    
+    # Validate currency (should be VND for most assets, USD for MSN gold)
+    currency = response.get("currency")
+    if currency not in ["VND", "USD"]:
+        logger.warning(f"Invalid currency: {currency}")
+        return False
+    
+    # Validate data_source
+    if response.get("data_source") != "VN_MARKET":
+        logger.warning(f"Invalid data_source: {response.get('data_source')}")
+        return False
+    
+    return True
+
 app = FastAPI(
     title="Vietnamese Market Data Service",
     description="Market data provider for Vietnamese assets (stocks, funds, indices) using vnstock",
@@ -70,17 +139,24 @@ async def health_check():
 async def get_funds_list():
     try:
         funds = fund_client.get_funds_list()
+        validated_funds = []
+        for f in funds:
+            fund_dict = {
+                "symbol": f["symbol"],
+                "fund_name": f["fund_name"],
+                "asset_type": f["asset_type"],
+                "asset_class": "Investment Fund",
+                "asset_sub_class": "Mutual Fund",
+                "data_source": "VN_MARKET"
+            }
+            # Validate the response
+            if not validate_response_fields(fund_dict, "FUND"):
+                logger.warning(f"Validation failed for fund list item {f['symbol']}")
+            validated_funds.append(fund_dict)
+        
         return FundListResponse(
-            funds=[
-                {
-                    "symbol": f["symbol"],
-                    "fund_name": f["fund_name"],
-                    "asset_type": f["asset_type"],
-                    "data_source": "VN_MARKET"
-                }
-                for f in funds
-            ],
-            total=len(funds)
+            funds=validated_funds,
+            total=len(validated_funds)
         )
     except Exception as e:
         logger.error(f"Error in get_funds_list: {e}")
@@ -331,9 +407,9 @@ async def get_gold_quote(symbol: str):
     Get the latest gold price quote from a specific provider.
     
     **Provider symbols:**
-    - SJC: `VN_GOLD`, `VN_GOLD_SJC`, `SJC_GOLD`, `SJC`
-    - BTMC: `VN_GOLD_BTMC`, `BTMC_GOLD`, `BTMC`
-    - MSN: `GOLD_MSN`, `GOLD`, `MSN_GOLD`
+    - SJC: `VN.GOLD`, `VN.GOLD.SJC`, `SJC.GOLD`, 
+    - BTMC: `VN.GOLD.BTMC`, `BTMC.GOLD`
+    - MSN: `GOLD.MSN`, `MSN.GOLD`
     
     **Response includes:**
     - SJC/BTMC: buy_price and sell_price (prices per tael in VND)
@@ -372,9 +448,9 @@ async def get_gold_history(
     Get historical gold price data for a specific provider.
     
     **Provider symbols:**
-    - SJC: `VN_GOLD`, `VN_GOLD_SJC`, `SJC_GOLD`, `SJC`
-    - BTMC: `VN_GOLD_BTMC`, `BTMC_GOLD`, `BTMC`
-    - MSN: `GOLD_MSN`, `GOLD`, `MSN_GOLD`
+    - SJC: `VN.GOLD`, `VN.GOLD.SJC`, `SJC.GOLD`, 
+    - BTMC: `VN.GOLD.BTMC`, `BTMC.GOLD`
+    - MSN: `GOLD.MSN`, `MSN.GOLD`
     
     **Default date range:** Last 365 days (if not specified)
     
@@ -449,6 +525,8 @@ async def search_assets(
                     symbol=stock_info["symbol"],
                     name=stock_info["company_name"],
                     asset_type="STOCK",
+                    asset_class="Equity",
+                    asset_sub_class="Stock",
                     exchange=stock_info.get("exchange", "HOSE"),
                     currency="VND",
                     data_source="VN_MARKET"
@@ -464,6 +542,8 @@ async def search_assets(
                     symbol=stock["symbol"],
                     name=stock["company_name"],
                     asset_type="STOCK",
+                    asset_class="Equity",
+                    asset_sub_class="Stock",
                     exchange=stock.get("exchange", "HOSE"),
                     currency="VND",
                     data_source="VN_MARKET"
@@ -481,6 +561,8 @@ async def search_assets(
                         symbol=fund["symbol"],
                         name=fund["fund_name"],
                         asset_type="FUND",
+                        asset_class="Investment Fund",
+                        asset_sub_class="Mutual Fund",
                         exchange="VN",
                         currency="VND",
                         data_source="VN_MARKET"
@@ -490,6 +572,8 @@ async def search_assets(
                         symbol=fund["symbol"],
                         name=fund["fund_name"],
                         asset_type="FUND",
+                        asset_class="Investment Fund",
+                        asset_sub_class="Mutual Fund",
                         exchange="VN",
                         currency="VND",
                         data_source="VN_MARKET"
@@ -505,6 +589,8 @@ async def search_assets(
                     symbol=idx,
                     name=f"Vietnam {idx} Index",
                     asset_type="INDEX",
+                    asset_class="Index",
+                    asset_sub_class="Market Index",
                     exchange="HOSE" if idx.startswith("VN") else "HNX",
                     currency="VND",
                     data_source="VN_MARKET"
@@ -514,6 +600,8 @@ async def search_assets(
                     symbol=idx,
                     name=f"Vietnam {idx} Index",
                     asset_type="INDEX",
+                    asset_class="Index",
+                    asset_sub_class="Market Index",
                     exchange="HOSE" if idx.startswith("VN") else "HNX",
                     currency="VND",
                     data_source="VN_MARKET"
@@ -532,6 +620,8 @@ async def search_assets(
                         symbol=provider["symbol"],
                         name=provider["name"],
                         asset_type=provider["asset_type"],
+                        asset_class="Commodity",
+                        asset_sub_class="Precious Metal",
                         exchange=provider["exchange"],
                         currency=provider["currency"],
                         data_source="VN_MARKET"
@@ -547,6 +637,8 @@ async def search_assets(
                         symbol=gold_info["symbol"],
                         name=gold_info["name"],
                         asset_type=gold_info["asset_type"],
+                        asset_class="Commodity",
+                        asset_sub_class="Precious Metal",
                         exchange=gold_info["exchange"],
                         currency=gold_info["currency"],
                         data_source="VN_MARKET"
@@ -597,6 +689,8 @@ async def get_history(
                 return {
                     "symbol": symbol,
                     "history": history,
+                    "asset_class": "Commodity",
+                    "asset_sub_class": "Precious Metal",
                     "currency": "VND",
                     "data_source": "VN_MARKET"
                 }
@@ -610,6 +704,8 @@ async def get_history(
             return {
                 "symbol": result.symbol,
                 "history": [item.dict() for item in result.history],
+                "asset_class": "Index",
+                "asset_sub_class": "Market Index",
                 "currency": result.currency,
                 "data_source": result.data_source
             }
@@ -620,6 +716,8 @@ async def get_history(
             return {
                 "symbol": result.symbol,
                 "history": [item.dict() for item in result.history],
+                "asset_class": "Investment Fund",
+                "asset_sub_class": "Mutual Fund",
                 "currency": result.currency,
                 "data_source": result.data_source
             }
@@ -628,6 +726,8 @@ async def get_history(
         return {
             "symbol": result.symbol,
             "history": [item.dict() for item in result.history],
+            "asset_class": "Equity",
+            "asset_sub_class": "Stock",
             "currency": result.currency,
             "data_source": result.data_source
         }
@@ -646,14 +746,17 @@ async def get_quote(symbol: str):
     - Stocks (e.g., VNM, FPT, MWG)
     - Funds (e.g., VESAF, VOF, EVF)
     - Indices (e.g., VNINDEX, VN30, HNX)
-    - Gold (e.g., VN_GOLD, SJC, BTMC, GOLD_MSN)
+    - Gold (e.g., VN.GOLD, SJC.GOLD, BTMC.GOLD, MSN.GOLD)
     
     Returns:
-        Unified quote response with asset_type field indicating the detected asset type.
-        Response includes dynamic fields based on asset type:
-        - Stocks/Funds/Indices: close, date
-        - Funds: nav (net asset value)
-        - Gold: buy_price, sell_price (for SJC/BTMC), close (for MSN)
+        Unified quote response with standardized OHLCV data structure:
+        - open, high, low, close, adjclose, volume: Price data
+        - nav: Net asset value (for funds)
+        - buy_price, sell_price: Gold prices (for SJC/BTMC gold)
+        - asset_type: Detected asset type
+        - asset_class, asset_sub_class: Asset classification
+        - currency: Pricing currency
+        - data_source: Data source identifier
     """
     try:
         symbol = symbol.upper()
@@ -664,7 +767,9 @@ async def get_quote(symbol: str):
             if quote:
                 return {
                     **quote,
-                    "asset_type": "GOLD"
+                    "asset_type": "GOLD",
+                    "asset_class": "Commodity",
+                    "asset_sub_class": "Precious Metal"
                 }
         except:
             pass
@@ -675,7 +780,9 @@ async def get_quote(symbol: str):
             result = await get_index_quote(symbol)
             return {
                 **result.dict(),
-                "asset_type": "INDEX"
+                "asset_type": "INDEX",
+                "asset_class": "Index",
+                "asset_sub_class": "Market Index"
             }
         
         # Try funds
@@ -684,14 +791,18 @@ async def get_quote(symbol: str):
             result = await get_fund_quote(symbol)
             return {
                 **result.dict(),
-                "asset_type": "FUND"
+                "asset_type": "FUND",
+                "asset_class": "Investment Fund",
+                "asset_sub_class": "Mutual Fund"
             }
         
         # Try stocks (default)
         result = await get_stock_quote(symbol)
         return {
             **result.dict(),
-            "asset_type": "STOCK"
+            "asset_type": "STOCK",
+            "asset_class": "Equity",
+            "asset_sub_class": "Stock"
         }
     except HTTPException:
         raise
@@ -706,66 +817,84 @@ async def search_asset(symbol: str):
         symbol_upper = symbol.upper()
         logger.info(f"Processing symbol: {symbol_upper}")
         
+        result_dict = None
+        asset_type = None
+        
         # Handle gold symbols
         try:
             gold_info = gold_client.search_gold(symbol)
             if gold_info:
-                return SearchResult(
-                    symbol=gold_info["symbol"],
-                    name=gold_info["name"],
-                    asset_type=gold_info["asset_type"],
-                    exchange=gold_info["exchange"],
-                    currency=gold_info["currency"],
-                    data_source="VN_MARKET"
-                )
+                result_dict = {
+                    "symbol": gold_info["symbol"],
+                    "name": gold_info["name"],
+                    "asset_type": gold_info["asset_type"],
+                    "asset_class": "Commodity",
+                    "asset_sub_class": "Precious Metal",
+                    "exchange": gold_info["exchange"],
+                    "currency": gold_info["currency"],
+                    "data_source": "VN_MARKET"
+                }
+                asset_type = "GOLD"
         except Exception as e:
             logger.debug(f"Error searching gold: {e}")
             pass
         
-        indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
-        if symbol_upper in indices:
-            return SearchResult(
-                symbol=symbol_upper,
-                name=f"Vietnam {symbol_upper} Index",
-                asset_type="INDEX",
-                exchange="HOSE" if symbol_upper.startswith("VN") else "HNX",
-                currency="VND",
-                data_source="VN_MARKET"
-            )
+        if result_dict is None:
+            indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
+            if symbol_upper in indices:
+                result_dict = {
+                    "symbol": symbol_upper,
+                    "name": f"Vietnam {symbol_upper} Index",
+                    "asset_type": "INDEX",
+                    "asset_class": "Index",
+                    "asset_sub_class": "Market Index",
+                    "exchange": "HOSE" if symbol_upper.startswith("VN") else "HNX",
+                    "currency": "VND",
+                    "data_source": "VN_MARKET"
+                }
+                asset_type = "INDEX"
         
-        fund_info = fund_client.search_fund_by_symbol(symbol_upper)
-        if fund_info:
-            return SearchResult(
-                symbol=fund_info["symbol"],
-                name=fund_info["fund_name"],
-                asset_type="FUND",
-                exchange="VN",
-                currency="VND",
-                data_source="VN_MARKET"
-            )
+        if result_dict is None:
+            fund_info = fund_client.search_fund_by_symbol(symbol_upper)
+            if fund_info:
+                result_dict = {
+                    "symbol": fund_info["symbol"],
+                    "name": fund_info["fund_name"],
+                    "asset_type": "FUND",
+                    "asset_class": "Investment Fund",
+                    "asset_sub_class": "Mutual Fund",
+                    "exchange": "VN",
+                    "currency": "VND",
+                    "data_source": "VN_MARKET"
+                }
+                asset_type = "FUND"
         
-        stock_info = stock_client.search_stock(symbol_upper)
-        if stock_info:
-            logger.info(f"Found stock info for {symbol_upper}: {stock_info}")
-            result = SearchResult(
-                symbol=stock_info["symbol"],
-                name=stock_info["company_name"],
-                asset_type="STOCK",
-                exchange=stock_info.get("exchange", "HOSE"),
-                currency="VND",
-                data_source="VN_MARKET"
-            )
-            logger.info(f"Returning SearchResult: {result}")
-            # Log the actual dictionary being returned
-            result_dict = result.dict()
-            logger.info(f"Result dict: {result_dict}")
-            return result_dict
-
-# Intentional syntax error to test if this file is being used
-# if True:
-#     pass
+        if result_dict is None:
+            stock_info = stock_client.search_stock(symbol_upper)
+            if stock_info:
+                logger.info(f"Found stock info for {symbol_upper}: {stock_info}")
+                result_dict = {
+                    "symbol": stock_info["symbol"],
+                    "name": stock_info["company_name"],
+                    "asset_type": "STOCK",
+                    "asset_class": "Equity",
+                    "asset_sub_class": "Stock",
+                    "exchange": stock_info.get("exchange", "HOSE"),
+                    "currency": "VND",
+                    "data_source": "VN_MARKET"
+                }
+                asset_type = "STOCK"
         
-        raise HTTPException(status_code=404, detail=f"Asset {symbol} not found")
+        if result_dict is None:
+            raise HTTPException(status_code=404, detail=f"Asset {symbol} not found")
+        
+        # Validate the response
+        if not validate_response_fields(result_dict, asset_type):
+            logger.warning(f"Validation failed for asset {symbol}")
+        
+        logger.info(f"Returning SearchResult: {result_dict}")
+        return result_dict
+        
     except HTTPException:
         raise
     except Exception as e:

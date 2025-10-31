@@ -64,11 +64,20 @@ class IndexClient:
             else:
                 date_str = str(date_val) if date_val else datetime.now().strftime("%Y-%m-%d")
             
+            open_val = float(info.get("open", 0.0)) if not pd.isna(info.get("open")) else 0.0
+            high_val = float(info.get("high", 0.0)) if not pd.isna(info.get("high")) else 0.0
+            low_val = float(info.get("low", 0.0)) if not pd.isna(info.get("low")) else 0.0
             close_val = float(info.get("close", 0.0)) if not pd.isna(info.get("close")) else 0.0
+            volume_val = float(info.get("volume", 0.0)) if not pd.isna(info.get("volume")) else 0.0
             
             return {
                 "symbol": symbol,
+                "open": open_val,
+                "high": high_val,
+                "low": low_val,
                 "close": close_val,
+                "adjclose": close_val,  # For indices, adjclose is typically the same as close
+                "volume": volume_val,
                 "date": date_str
             }
         except Exception as e:
