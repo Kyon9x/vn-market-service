@@ -637,40 +637,133 @@ async def get_history(
         logger.error(f"Error in get_history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/search/{symbol}")
+@app.get("/quote/{symbol}")
+async def get_quote(symbol: str):
+    """
+    Universal quote endpoint - auto-detects asset type and returns latest price data.
+    
+    Supports all asset types:
+    - Stocks (e.g., VNM, FPT, MWG)
+    - Funds (e.g., VESAF, VOF, EVF)
+    - Indices (e.g., VNINDEX, VN30, HNX)
+    - Gold (e.g., VN_GOLD, SJC, BTMC, GOLD_MSN)
+    
+    Returns:
+        Unified quote response with asset_type field indicating the detected asset type.
+        Response includes dynamic fields based on asset type:
+        - Stocks/Funds/Indices: close, date
+        - Funds: nav (net asset value)
+        - Gold: buy_price, sell_price (for SJC/BTMC), close (for MSN)
+    """
+    try:
+        symbol = symbol.upper()
+        
+        # Try gold first
+        try:
+            quote = gold_client.get_latest_quote(symbol)
+            if quote:
+                return {
+                    **quote,
+                    "asset_type": "GOLD"
+                }
+        except:
+            pass
+        
+        # Try indices
+        indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
+        if symbol in indices:
+            result = await get_index_quote(symbol)
+            return {
+                **result.dict(),
+                "asset_type": "INDEX"
+            }
+        
+        # Try funds
+        fund_symbols = [f["symbol"] for f in fund_client.get_funds_list()]
+        if symbol in fund_symbols:
+            result = await get_fund_quote(symbol)
+            return {
+                **result.dict(),
+                "asset_type": "FUND"
+            }
+        
+        # Try stocks (default)
+        result = await get_stock_quote(symbol)
+        return {
+            **result.dict(),
+            "asset_type": "STOCK"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_quote: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/search/{symbol}", response_model=SearchResult)
 async def search_asset(symbol: str):
+    logger.info(f"search_asset called with symbol: {symbol}")
     try:
         symbol_upper = symbol.upper()
+        logger.info(f"Processing symbol: {symbol_upper}")
         
         # Handle gold symbols
         try:
             gold_info = gold_client.search_gold(symbol)
             if gold_info:
-                return gold_info
-        except:
+                return SearchResult(
+                    symbol=gold_info["symbol"],
+                    name=gold_info["name"],
+                    asset_type=gold_info["asset_type"],
+                    exchange=gold_info["exchange"],
+                    currency=gold_info["currency"],
+                    data_source="VN_MARKET"
+                )
+        except Exception as e:
+            logger.debug(f"Error searching gold: {e}")
             pass
         
         indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
         if symbol_upper in indices:
-            return {
-                "symbol": symbol_upper,
-                "fund_name": f"Vietnam {symbol_upper} Index",
-                "currency": "VND",
-                "data_source": "VN_MARKET"
-            }
+            return SearchResult(
+                symbol=symbol_upper,
+                name=f"Vietnam {symbol_upper} Index",
+                asset_type="INDEX",
+                exchange="HOSE" if symbol_upper.startswith("VN") else "HNX",
+                currency="VND",
+                data_source="VN_MARKET"
+            )
         
         fund_info = fund_client.search_fund_by_symbol(symbol_upper)
         if fund_info:
-            return fund_info
+            return SearchResult(
+                symbol=fund_info["symbol"],
+                name=fund_info["fund_name"],
+                asset_type="FUND",
+                exchange="VN",
+                currency="VND",
+                data_source="VN_MARKET"
+            )
         
         stock_info = stock_client.search_stock(symbol_upper)
         if stock_info:
-            return {
-                "symbol": stock_info["symbol"],
-                "fund_name": stock_info["company_name"],
-                "currency": "VND",
-                "data_source": "VN_MARKET"
-            }
+            logger.info(f"Found stock info for {symbol_upper}: {stock_info}")
+            result = SearchResult(
+                symbol=stock_info["symbol"],
+                name=stock_info["company_name"],
+                asset_type="STOCK",
+                exchange=stock_info.get("exchange", "HOSE"),
+                currency="VND",
+                data_source="VN_MARKET"
+            )
+            logger.info(f"Returning SearchResult: {result}")
+            # Log the actual dictionary being returned
+            result_dict = result.dict()
+            logger.info(f"Result dict: {result_dict}")
+            return result_dict
+
+# Intentional syntax error to test if this file is being used
+# if True:
+#     pass
         
         raise HTTPException(status_code=404, detail=f"Asset {symbol} not found")
     except HTTPException:

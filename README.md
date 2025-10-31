@@ -461,6 +461,59 @@ GET /history/VNINDEX?start_date=2024-10-01&end_date=2024-10-26                # 
 GET /history/GOLD_MSN?start_date=2024-10-01&end_date=2024-10-26               # Gold (MSN)
 ```
 
+#### Get Any Asset Quote
+
+```
+GET /quote/{symbol}
+```
+
+**Examples:**
+
+```
+GET /quote/VNM           # Stock quote
+GET /quote/VFMVF1        # Fund quote
+GET /quote/VNINDEX       # Index quote
+GET /quote/VN_GOLD_SJC   # Gold quote (SJC)
+GET /quote/BTMC_GOLD     # Gold quote (BTMC)
+GET /quote/GOLD_MSN      # Gold quote (MSN)
+```
+
+**Response Examples:**
+
+```json
+// Stock quote
+{
+  "symbol": "VNM",
+  "close": 85000,
+  "date": "2024-10-26",
+  "currency": "VND",
+  "data_source": "VN_MARKET",
+  "asset_type": "STOCK"
+}
+
+// Fund quote
+{
+  "symbol": "VFMVF1",
+  "nav": 15234.56,
+  "date": "2024-10-26",
+  "currency": "VND",
+  "data_source": "VN_MARKET",
+  "asset_type": "FUND"
+}
+
+// Gold quote (SJC)
+{
+  "symbol": "VN_GOLD_SJC",
+  "close": 84500000,
+  "date": "2024-10-26",
+  "buy_price": 84000000,
+  "sell_price": 86500000,
+  "currency": "VND",
+  "data_source": "VN_MARKET",
+  "asset_type": "GOLD"
+}
+```
+
 ## Gold API Provider Information
 
 ### About Gold Providers
