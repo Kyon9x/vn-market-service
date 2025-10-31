@@ -1,9 +1,9 @@
 import sys
 
 # Check Python version requirement (3.9+)
-if sys.version_info < (3, 9):
+if sys.version_info < (3, 10):
     raise RuntimeError(
-        f"Python 3.9 or higher is required. Current version: {sys.version_info.major}.{sys.version_info.minor}"
+        f"Python 3.10 or higher is required. Current version: {sys.version_info.major}.{sys.version_info.minor}"
     )
 
 from fastapi import FastAPI, HTTPException, Query

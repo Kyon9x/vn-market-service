@@ -12,17 +12,17 @@ class GoldClient:
     PROVIDERS = {
         "sjc": {
             "name": "Saigon Jewelry Company",
-            "symbols": ["VN_GOLD", "VN_GOLD_SJC", "SJC_GOLD", "SJC"],
+            "symbols": ["VN.GOLD", "VN.GOLD.SJC", "SJC.GOLD"],
             "api_func": "sjc_gold_price"
         },
         "btmc": {
             "name": "Bao Tin Minh Chau",
-            "symbols": ["VN_GOLD_BTMC", "BTMC_GOLD", "BTMC"],
+            "symbols": ["VN.GOLD.BTMC", "BTMC.GOLD"],
             "api_func": "btmc_goldprice"
         },
         "msn": {
             "name": "Microsoft/MSN",
-            "symbols": ["GOLD_MSN", "GOLD", "MSN_GOLD"],
+            "symbols": ["GOLD.MSN", "MSN.GOLD"],
             "api_func": "world_index"
         }
     }
