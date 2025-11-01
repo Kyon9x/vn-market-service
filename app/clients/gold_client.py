@@ -12,7 +12,7 @@ class GoldClient:
     PROVIDERS = {
         "sjc": {
             "name": "Saigon Jewelry Company",
-            "symbols": ["VN.GOLD", "VN.GOLD.SJC", "SJC.GOLD"],
+            "symbols": ["VN.GOLD.SJC", "SJC.GOLD"],
             "api_func": "sjc_gold_price"
         },
         "btmc": {
@@ -28,20 +28,6 @@ class GoldClient:
     }
     
     def __init__(self, cache_manager=None, memory_cache=None):
-        # Fallback prices for each provider in VND per tael (1 tael ≈ 37.5 grams)
-        self.fallback_prices = {
-            "sjc": {
-                "buy_price": 84_000_000.0,
-                "sell_price": 86_500_000.0
-            },
-            "btmc": {
-                "buy_price": 82_000_000.0,
-                "sell_price": 85_000_000.0
-            },
-            "msn": {
-                "close": 2_100_000.0  # USD price in VND equivalent, approximate
-            }
-        }
         self.cache_manager = cache_manager
         self.memory_cache = memory_cache
     
@@ -134,24 +120,9 @@ class GoldClient:
                             current_dt += timedelta(days=1)
                             continue
                 except Exception as date_error:
-                    logger.warning(f"API error for {date_str}: {date_error}, using fallback")
+                    logger.warning(f"API error for {date_str}: {date_error}, skipping date")
                 
-                # Fallback
-                fallback = self.fallback_prices["sjc"]
-                price = fallback["sell_price"]
-                history.append({
-                    "date": date_str,
-                    "nav": price,
-                    "open": price,
-                    "high": price,
-                    "low": price,
-                    "close": price,
-                    "adjclose": 0,
-                    "volume": 0.0,
-                    "buy_price": fallback["buy_price"],
-                    "sell_price": fallback["sell_price"]
-                })
-                
+                # Skip this date and continue to next
                 current_dt += timedelta(days=1)
             
             return history
@@ -196,24 +167,9 @@ class GoldClient:
                             current_dt += timedelta(days=1)
                             continue
                 except Exception as date_error:
-                    logger.warning(f"BTMC API error for {date_str}: {date_error}")
+                    logger.warning(f"BTMC API error for {date_str}: {date_error}, skipping date")
                 
-                # Fallback
-                fallback = self.fallback_prices["btmc"]
-                price = fallback["sell_price"]
-                history.append({
-                    "date": date_str,
-                    "nav": price,
-                    "open": price,
-                    "high": price,
-                    "low": price,
-                    "close": price,
-                    "adjclose": price,
-                    "volume": 0.0,
-                    "buy_price": fallback["buy_price"],
-                    "sell_price": fallback["sell_price"]
-                })
-                
+                # Skip this date and continue to next
                 current_dt += timedelta(days=1)
             
             return history
@@ -231,7 +187,7 @@ class GoldClient:
             
             if df is None or df.empty:
                 logger.warning("MSN API returned empty data")
-                return self._get_msn_fallback_history(start_date, end_date)
+                return []
             
             history = []
             for idx, row in df.iterrows():
@@ -250,37 +206,9 @@ class GoldClient:
             
             return history
         except Exception as e:
-            logger.warning(f"Error fetching MSN history: {e}, using fallback")
-            return self._get_msn_fallback_history(start_date, end_date)
-    
-    def _get_msn_fallback_history(self, start_date: str, end_date: str) -> List[Dict]:
-        """Generate fallback MSN historical data."""
-        try:
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-            
-            history = []
-            current_dt = start_dt
-            fallback_price = self.fallback_prices["msn"]["close"]
-            
-            while current_dt <= end_dt:
-                date_str = current_dt.strftime("%Y-%m-%d")
-                history.append({
-                    "date": date_str,
-                    "nav": fallback_price,
-                    "open": fallback_price,
-                    "high": fallback_price,
-                    "low": fallback_price,
-                    "close": fallback_price,
-                    "adjclose": fallback_price,
-                    "volume": 0.0
-                })
-                current_dt += timedelta(days=1)
-            
-            return history
-        except Exception as e:
-            logger.error(f"Error in _get_msn_fallback_history: {e}")
+            logger.error(f"Error fetching MSN history: {e}")
             return []
+
     
     def get_latest_quote(self, symbol: str) -> Optional[Dict]:
         """Fetch the latest gold price for a given provider."""
@@ -333,8 +261,8 @@ class GoldClient:
             df = sjc_gold_price()
             
             if df is None or df.empty:
-                logger.warning("SJC API returned empty data, using fallback")
-                return self._get_sjc_fallback_quote(symbol)
+                logger.warning("SJC API returned empty data")
+                return None
             
             info = df.iloc[0]
             date_val = info.get("date")
@@ -359,29 +287,9 @@ class GoldClient:
                 "currency": "VND"
             }
         except Exception as e:
-            logger.warning(f"Error fetching SJC quote: {e}, using fallback")
-            return self._get_sjc_fallback_quote(symbol)
-    
-    def _get_sjc_fallback_quote(self, symbol: str) -> Dict:
-        """Return fallback SJC gold prices."""
-        today = datetime.now().strftime("%Y-%m-%d")
-        fallback = self.fallback_prices["sjc"]
-        sell_price = fallback["sell_price"]
-        
-        # For gold, we'll set OHLC values to the sell price since gold typically trades at a single price
-        return {
-            "symbol": symbol,
-            "open": sell_price,
-            "high": sell_price,
-            "low": sell_price,
-            "close": sell_price,
-            "adjclose": sell_price,
-            "volume": 0.0,  # Gold typically doesn't have volume data in this context
-            "buy_price": fallback["buy_price"],
-            "sell_price": sell_price,
-            "date": today,
-            "currency": "VND"
-        }
+            logger.error(f"Error fetching SJC quote: {e}")
+            return None
+
     
     def _get_btmc_quote(self, symbol: str) -> Optional[Dict]:
         """Fetch latest BTMC gold price."""
@@ -389,8 +297,8 @@ class GoldClient:
             df = btmc_goldprice()
             
             if df is None or df.empty:
-                logger.warning("BTMC API returned empty data, using fallback")
-                return self._get_btmc_fallback_quote(symbol)
+                logger.warning("BTMC API returned empty data")
+                return None
             
             info = df.iloc[0]
             time_val = info.get("time")
@@ -415,29 +323,9 @@ class GoldClient:
                 "currency": "VND"
             }
         except Exception as e:
-            logger.warning(f"Error fetching BTMC quote: {e}, using fallback")
-            return self._get_btmc_fallback_quote(symbol)
-    
-    def _get_btmc_fallback_quote(self, symbol: str) -> Dict:
-        """Return fallback BTMC gold prices."""
-        today = datetime.now().strftime("%Y-%m-%d")
-        fallback = self.fallback_prices["btmc"]
-        sell_price = fallback["sell_price"]
-        
-        # For gold, we'll set OHLC values to the sell price since gold typically trades at a single price
-        return {
-            "symbol": symbol,
-            "open": sell_price,
-            "high": sell_price,
-            "low": sell_price,
-            "close": sell_price,
-            "adjclose": sell_price,
-            "volume": 0.0,  # Gold typically doesn't have volume data in this context
-            "buy_price": fallback["buy_price"],
-            "sell_price": sell_price,
-            "date": today,
-            "currency": "VND"
-        }
+            logger.error(f"Error fetching BTMC quote: {e}")
+            return None
+
     
     def _get_msn_quote(self, symbol: str) -> Optional[Dict]:
         """Fetch latest MSN/world gold commodity price."""
@@ -450,8 +338,8 @@ class GoldClient:
                                        interval='1D')
             
             if df is None or df.empty:
-                logger.warning("MSN API returned empty data, using fallback")
-                return self._get_msn_fallback_quote(symbol)
+                logger.warning("MSN API returned empty data")
+                return None
             
             latest = df.iloc[-1]
             date_str = pd.to_datetime(latest['time']).strftime("%Y-%m-%d") if 'time' in latest else datetime.now().strftime("%Y-%m-%d")
@@ -474,27 +362,9 @@ class GoldClient:
                 "currency": "USD"
             }
         except Exception as e:
-            logger.warning(f"Error fetching MSN quote: {e}, using fallback")
-            return self._get_msn_fallback_quote(symbol)
-    
-    def _get_msn_fallback_quote(self, symbol: str) -> Dict:
-        """Return fallback MSN gold prices."""
-        today = datetime.now().strftime("%Y-%m-%d")
-        fallback = self.fallback_prices["msn"]
-        close_price = fallback["close"]
-        
-        # For gold commodity, we'll set OHLC values to the close price for fallback
-        return {
-            "symbol": symbol,
-            "open": close_price,
-            "high": close_price,
-            "low": close_price,
-            "close": close_price,
-            "adjclose": close_price,
-            "volume": 0.0,  # No volume data in fallback
-            "date": today,
-            "currency": "USD"
-        }
+            logger.error(f"Error fetching MSN quote: {e}")
+            return None
+
     
     def search_gold(self, symbol: str) -> Optional[Dict]:
         """Return gold asset information for search results."""

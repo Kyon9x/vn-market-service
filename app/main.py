@@ -183,8 +183,8 @@ async def seed_cache(force_refresh: bool = False):
         logger.info(f"Manual cache seeding triggered (force_refresh={force_refresh})")
         counts = await data_seeder.seed_all_assets(force_refresh=force_refresh)
         
-        # Warm up popular assets after seeding
-        await data_seeder.refresh_popular_assets()
+        # Note: Not refreshing popular asset quotes to avoid delays
+        # Quotes will be fetched on-demand when accessed
         
         return {
             "message": "Cache seeding completed successfully",
@@ -995,8 +995,8 @@ async def startup_event():
         counts = await data_seeder.seed_all_assets(force_refresh=False)
         logger.info(f"Initial seeding completed: {counts}")
         
-        # Warm up popular assets
-        await data_seeder.refresh_popular_assets()
+        # Note: Not refreshing popular asset quotes on startup to avoid delays
+        # Quotes will be fetched on-demand when accessed
         
         # Start background cache tasks
         await start_cache_background_tasks(cache_manager, stock_client, fund_client, gold_client)
