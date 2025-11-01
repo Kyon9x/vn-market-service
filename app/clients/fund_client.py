@@ -7,12 +7,14 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 class FundClient:
-    def __init__(self):
+    def __init__(self, cache_manager=None, memory_cache=None):
         self._funds_cache: Optional[List[Dict]] = None
         self._funds_map: Dict[str, int] = {}
         self._cache_timestamp: Optional[datetime] = None
         self._cache_duration = timedelta(hours=24)
         self._fund_api = Fund()
+        self.cache_manager = cache_manager
+        self.memory_cache = memory_cache
     
     def _is_cache_valid(self) -> bool:
         if self._cache_timestamp is None:
@@ -141,6 +143,23 @@ class FundClient:
             return []
     
     def get_latest_nav(self, symbol: str) -> Optional[Dict]:
+        # Check memory cache first
+        if self.memory_cache:
+            cached_quote = self.memory_cache.get_quote(symbol, "FUND")
+            if cached_quote:
+                logger.debug(f"Using cached NAV for {symbol}")
+                return cached_quote
+        
+        # Check persistent cache
+        if self.cache_manager:
+            cached_quote = self.cache_manager.get_quote(symbol, "FUND")
+            if cached_quote:
+                logger.debug(f"Using persistent cached NAV for {symbol}")
+                # Also store in memory cache for faster access
+                if self.memory_cache:
+                    self.memory_cache.set_quote(symbol, "FUND", cached_quote)
+                return cached_quote
+        
         try:
             fund_id = self._get_fund_id(symbol)
             if not fund_id:
@@ -162,7 +181,7 @@ class FundClient:
             nav_float = float(nav_value) if nav_value else 0.0
             
             # For funds, we'll set OHLC values to the NAV since that's the primary price metric
-            return {
+            quote_data = {
                 "symbol": symbol,
                 "open": nav_float,
                 "high": nav_float,
@@ -173,6 +192,14 @@ class FundClient:
                 "nav": nav_float,
                 "date": date_str
             }
+            
+            # Cache the quote
+            if self.memory_cache:
+                self.memory_cache.set_quote(symbol, "FUND", quote_data)
+            if self.cache_manager:
+                self.cache_manager.set_quote(symbol, "FUND", quote_data)
+            
+            return quote_data
         except Exception as e:
             logger.error(f"Error fetching latest NAV for {symbol}: {e}")
             return None

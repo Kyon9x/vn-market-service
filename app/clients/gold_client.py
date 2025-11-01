@@ -27,7 +27,7 @@ class GoldClient:
         }
     }
     
-    def __init__(self):
+    def __init__(self, cache_manager=None, memory_cache=None):
         # Fallback prices for each provider in VND per tael (1 tael ≈ 37.5 grams)
         self.fallback_prices = {
             "sjc": {
@@ -42,6 +42,8 @@ class GoldClient:
                 "close": 2_100_000.0  # USD price in VND equivalent, approximate
             }
         }
+        self.cache_manager = cache_manager
+        self.memory_cache = memory_cache
     
     def parse_symbol(self, symbol: str) -> Tuple[str, str]:
         """
@@ -65,15 +67,29 @@ class GoldClient:
     
     def get_gold_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         """Fetch historical gold prices for a given provider."""
+        # Check cache first
+        if self.cache_manager:
+            cached_history = self.cache_manager.get_historical_data(symbol, start_date, end_date, "GOLD")
+            if cached_history:
+                logger.debug(f"Using cached historical data for {symbol}")
+                return cached_history
+        
         try:
             _, provider = self.parse_symbol(symbol)
             
+            history = []
             if provider == "sjc":
-                return self._get_sjc_history(start_date, end_date)
+                history = self._get_sjc_history(start_date, end_date)
             elif provider == "btmc":
-                return self._get_btmc_history(start_date, end_date)
+                history = self._get_btmc_history(start_date, end_date)
             elif provider == "msn":
-                return self._get_msn_history(start_date, end_date)
+                history = self._get_msn_history(start_date, end_date)
+            
+            # Cache the results
+            if history and self.cache_manager:
+                self.cache_manager.set_historical_data(symbol, start_date, end_date, "GOLD", history)
+            
+            return history
         except ValueError as e:
             logger.error(f"Invalid symbol: {e}")
             return []
@@ -268,15 +284,42 @@ class GoldClient:
     
     def get_latest_quote(self, symbol: str) -> Optional[Dict]:
         """Fetch the latest gold price for a given provider."""
+        # Check memory cache first
+        if self.memory_cache:
+            cached_quote = self.memory_cache.get_quote(symbol, "GOLD")
+            if cached_quote:
+                logger.debug(f"Using cached gold quote for {symbol}")
+                return cached_quote
+        
+        # Check persistent cache
+        if self.cache_manager:
+            cached_quote = self.cache_manager.get_quote(symbol, "GOLD")
+            if cached_quote:
+                logger.debug(f"Using persistent cached gold quote for {symbol}")
+                # Also store in memory cache for faster access
+                if self.memory_cache:
+                    self.memory_cache.set_quote(symbol, "GOLD", cached_quote)
+                return cached_quote
+        
         try:
             _, provider = self.parse_symbol(symbol)
             
+            quote_data = None
             if provider == "sjc":
-                return self._get_sjc_quote(symbol)
+                quote_data = self._get_sjc_quote(symbol)
             elif provider == "btmc":
-                return self._get_btmc_quote(symbol)
+                quote_data = self._get_btmc_quote(symbol)
             elif provider == "msn":
-                return self._get_msn_quote(symbol)
+                quote_data = self._get_msn_quote(symbol)
+            
+            # Cache the quote
+            if quote_data:
+                if self.memory_cache:
+                    self.memory_cache.set_quote(symbol, "GOLD", quote_data)
+                if self.cache_manager:
+                    self.cache_manager.set_quote(symbol, "GOLD", quote_data)
+            
+            return quote_data
         except ValueError as e:
             logger.error(f"Invalid symbol: {e}")
             return None

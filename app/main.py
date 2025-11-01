@@ -30,8 +30,14 @@ from app.clients.stock_client import StockClient
 from app.clients.index_client import IndexClient
 from app.clients.gold_client import GoldClient
 from app.config import HOST, PORT, CORS_ORIGINS
+from app.cache.cache_manager import CacheManager
+from app.cache.memory_cache import quote_cache, search_cache, cleanup_expired_caches, get_cache_stats
+from app.cache.search_optimizer import get_search_optimizer
+from app.cache.background_manager import start_cache_background_tasks, stop_cache_background_tasks
+from app.cache.data_seeder import get_data_seeder
 import logging
 from datetime import datetime, timedelta
+import asyncio
 
 logging.basicConfig(
     level=logging.INFO,
@@ -122,10 +128,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-fund_client = FundClient()
-stock_client = StockClient()
-index_client = IndexClient()
-gold_client = GoldClient()
+# Initialize cache manager and clients
+cache_manager = CacheManager()
+fund_client = FundClient(cache_manager, quote_cache)
+stock_client = StockClient(cache_manager, quote_cache)
+index_client = IndexClient(cache_manager, quote_cache)
+gold_client = GoldClient(cache_manager, quote_cache)
+search_optimizer = get_search_optimizer(cache_manager, search_cache)
+data_seeder = get_data_seeder(cache_manager, stock_client, fund_client, gold_client)
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -134,6 +144,66 @@ async def health_check():
         service="vn-market-service",
         version="2.0.0"
     )
+
+@app.get("/cache/stats")
+async def get_cache_statistics():
+    """Get cache statistics for monitoring."""
+    try:
+        memory_stats = get_cache_stats()
+        persistent_stats = cache_manager.get_stats()
+        
+        return {
+            "memory_cache": memory_stats,
+            "persistent_cache": persistent_stats,
+            "cache_enabled": True
+        }
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/cache/cleanup")
+async def cleanup_cache():
+    """Manually trigger cache cleanup."""
+    try:
+        # Clean memory caches
+        cleanup_expired_caches()
+        
+        # Clean persistent cache
+        cache_manager.cleanup_expired()
+        
+        return {"message": "Cache cleanup completed successfully"}
+    except Exception as e:
+        logger.error(f"Error during cache cleanup: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/cache/seed")
+async def seed_cache(force_refresh: bool = False):
+    """Manually trigger cache seeding with all available assets."""
+    try:
+        logger.info(f"Manual cache seeding triggered (force_refresh={force_refresh})")
+        counts = await data_seeder.seed_all_assets(force_refresh=force_refresh)
+        
+        # Warm up popular assets after seeding
+        await data_seeder.refresh_popular_assets()
+        
+        return {
+            "message": "Cache seeding completed successfully",
+            "counts": counts,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error during cache seeding: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/cache/seed/progress")
+async def get_seeding_progress():
+    """Get current seeding progress."""
+    try:
+        progress = data_seeder.get_seeding_progress()
+        return progress
+    except Exception as e:
+        logger.error(f"Error getting seeding progress: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/funds", response_model=FundListResponse)
 async def get_funds_list():
@@ -511,157 +581,172 @@ async def search_assets(
     limit: int = Query(20, ge=1, le=100, description="Maximum number of results to return (default: 20)")
 ):
     try:
-        query_upper = query.upper()
-        query_lower = query.lower()
-        results = []
-        exact_matches = []
-        partial_matches = []
+        # Define async search functions for parallel execution
+        async def search_stocks():
+            try:
+                query_upper = query.upper()
+                query_lower = query.lower()
+                results = []
+                
+                # Search by symbol (exact match)
+                stock_info = stock_client.search_stock(query_upper)
+                if stock_info:
+                    results.append({
+                        "symbol": stock_info["symbol"],
+                        "name": stock_info["company_name"],
+                        "asset_type": "STOCK",
+                        "asset_class": "Equity",
+                        "asset_sub_class": "Stock",
+                        "exchange": stock_info.get("exchange", "HOSE"),
+                        "currency": "VND",
+                        "data_source": "VN_MARKET"
+                    })
+                
+                # Search by name (partial match)
+                stocks = stock_client.search_stocks_by_name(query_lower, limit=10)
+                for stock in stocks:
+                    # Avoid duplicates
+                    if not any(r["symbol"] == stock["symbol"] for r in results):
+                        results.append({
+                            "symbol": stock["symbol"],
+                            "name": stock["company_name"],
+                            "asset_type": "STOCK",
+                            "asset_class": "Equity",
+                            "asset_sub_class": "Stock",
+                            "exchange": stock.get("exchange", "HOSE"),
+                            "currency": "VND",
+                            "data_source": "VN_MARKET"
+                        })
+                
+                return results
+            except Exception as e:
+                logger.debug(f"Error searching stocks: {e}")
+                return []
         
-        # Search stocks by symbol (exact match first)
-        try:
-            stock_info = stock_client.search_stock(query_upper)
-            if stock_info:
-                exact_matches.append(SearchResult(
-                    symbol=stock_info["symbol"],
-                    name=stock_info["company_name"],
-                    asset_type="STOCK",
-                    asset_class="Equity",
-                    asset_sub_class="Stock",
-                    exchange=stock_info.get("exchange", "HOSE"),
-                    currency="VND",
-                    data_source="VN_MARKET"
-                ))
-        except Exception as e:
-            logger.debug(f"Error searching stock by symbol: {e}")
+        async def search_funds():
+            try:
+                query_lower = query.lower()
+                query_upper = query.upper()
+                results = []
+                
+                funds = fund_client.search_funds_by_name(query_lower, limit=10)
+                for fund in funds:
+                    results.append({
+                        "symbol": fund["symbol"],
+                        "name": fund["fund_name"],
+                        "asset_type": "FUND",
+                        "asset_class": "Investment Fund",
+                        "asset_sub_class": "Mutual Fund",
+                        "exchange": "VN",
+                        "currency": "VND",
+                        "data_source": "VN_MARKET"
+                    })
+                
+                return results
+            except Exception as e:
+                logger.debug(f"Error searching funds: {e}")
+                return []
         
-        # Search stocks by name (partial match)
-        try:
-            stocks = stock_client.search_stocks_by_name(query_lower, limit=10)
-            for stock in stocks:
-                partial_matches.append(SearchResult(
-                    symbol=stock["symbol"],
-                    name=stock["company_name"],
-                    asset_type="STOCK",
-                    asset_class="Equity",
-                    asset_sub_class="Stock",
-                    exchange=stock.get("exchange", "HOSE"),
-                    currency="VND",
-                    data_source="VN_MARKET"
-                ))
-        except Exception as e:
-            logger.debug(f"Error searching stocks by name: {e}")
+        async def search_indices():
+            try:
+                query_upper = query.upper()
+                results = []
+                
+                indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
+                for idx in indices:
+                    if query_upper == idx or query_upper in idx or idx in query_upper:
+                        results.append({
+                            "symbol": idx,
+                            "name": f"Vietnam {idx} Index",
+                            "asset_type": "INDEX",
+                            "asset_class": "Index",
+                            "asset_sub_class": "Market Index",
+                            "exchange": "HOSE" if idx.startswith("VN") else "HNX",
+                            "currency": "VND",
+                            "data_source": "VN_MARKET"
+                        })
+                
+                return results
+            except Exception as e:
+                logger.debug(f"Error searching indices: {e}")
+                return []
         
-        # Search funds by symbol and name
-        try:
-            funds = fund_client.search_funds_by_name(query_lower, limit=10)
-            for fund in funds:
-                # Check if exact symbol match
-                if fund["symbol"].upper() == query_upper:
-                    exact_matches.append(SearchResult(
-                        symbol=fund["symbol"],
-                        name=fund["fund_name"],
-                        asset_type="FUND",
-                        asset_class="Investment Fund",
-                        asset_sub_class="Mutual Fund",
-                        exchange="VN",
-                        currency="VND",
-                        data_source="VN_MARKET"
-                    ))
+        async def search_gold():
+            try:
+                query_upper = query.upper()
+                query_lower = query.lower()
+                results = []
+                
+                # Check for gold-related queries
+                gold_patterns = ["gold", "vn gold", "vn_gold", "vngold", "sjc", "btmc", "msn"]
+                query_normalized = query_lower.replace("_", " ").replace("-", " ").strip()
+                is_gold_query = query_normalized == "gold" or any(pattern in query_normalized for pattern in gold_patterns)
+                
+                if is_gold_query:
+                    gold_providers = gold_client.get_all_gold_providers()
+                    for provider in gold_providers:
+                        results.append({
+                            "symbol": provider["symbol"],
+                            "name": provider["name"],
+                            "asset_type": provider["asset_type"],
+                            "asset_class": "Commodity",
+                            "asset_sub_class": "Precious Metal",
+                            "exchange": provider["exchange"],
+                            "currency": provider["currency"],
+                            "data_source": "VN_MARKET"
+                        })
                 else:
-                    partial_matches.append(SearchResult(
-                        symbol=fund["symbol"],
-                        name=fund["fund_name"],
-                        asset_type="FUND",
-                        asset_class="Investment Fund",
-                        asset_sub_class="Mutual Fund",
-                        exchange="VN",
-                        currency="VND",
-                        data_source="VN_MARKET"
-                    ))
-        except Exception as e:
-            logger.debug(f"Error searching funds: {e}")
-        
-        # Search indices
-        indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
-        for idx in indices:
-            if query_upper == idx:
-                exact_matches.append(SearchResult(
-                    symbol=idx,
-                    name=f"Vietnam {idx} Index",
-                    asset_type="INDEX",
-                    asset_class="Index",
-                    asset_sub_class="Market Index",
-                    exchange="HOSE" if idx.startswith("VN") else "HNX",
-                    currency="VND",
-                    data_source="VN_MARKET"
-                ))
-            elif query_upper in idx or idx in query_upper:
-                partial_matches.append(SearchResult(
-                    symbol=idx,
-                    name=f"Vietnam {idx} Index",
-                    asset_type="INDEX",
-                    asset_class="Index",
-                    asset_sub_class="Market Index",
-                    exchange="HOSE" if idx.startswith("VN") else "HNX",
-                    currency="VND",
-                    data_source="VN_MARKET"
-                ))
-        
-        # Search gold - check for gold-related queries
-        gold_patterns = ["gold", "vn gold", "vn_gold", "vngold", "sjc", "btmc", "msn"]
-        query_normalized = query_lower.replace("_", " ").replace("-", " ").strip()
-        is_gold_query = query_normalized == "gold" or any(pattern in query_normalized for pattern in gold_patterns)
-        
-        if is_gold_query:
-            try:
-                gold_providers = gold_client.get_all_gold_providers()
-                for provider in gold_providers:
-                    partial_matches.append(SearchResult(
-                        symbol=provider["symbol"],
-                        name=provider["name"],
-                        asset_type=provider["asset_type"],
-                        asset_class="Commodity",
-                        asset_sub_class="Precious Metal",
-                        exchange=provider["exchange"],
-                        currency=provider["currency"],
-                        data_source="VN_MARKET"
-                    ))
+                    # Try to match specific gold symbol
+                    gold_info = gold_client.search_gold(query_upper)
+                    if gold_info:
+                        results.append({
+                            "symbol": gold_info["symbol"],
+                            "name": gold_info["name"],
+                            "asset_type": gold_info["asset_type"],
+                            "asset_class": "Commodity",
+                            "asset_sub_class": "Precious Metal",
+                            "exchange": gold_info["exchange"],
+                            "currency": gold_info["currency"],
+                            "data_source": "VN_MARKET"
+                        })
+                
+                return results
             except Exception as e:
-                logger.debug(f"Error searching gold providers: {e}")
-        else:
-            # Try to match specific gold symbol
-            try:
-                gold_info = gold_client.search_gold(query_upper)
-                if gold_info:
-                    exact_matches.append(SearchResult(
-                        symbol=gold_info["symbol"],
-                        name=gold_info["name"],
-                        asset_type=gold_info["asset_type"],
-                        asset_class="Commodity",
-                        asset_sub_class="Precious Metal",
-                        exchange=gold_info["exchange"],
-                        currency=gold_info["currency"],
-                        data_source="VN_MARKET"
-                    ))
-            except Exception as e:
-                logger.debug(f"Error searching gold by symbol: {e}")
+                logger.debug(f"Error searching gold: {e}")
+                return []
         
-        # Combine results: exact matches first, then partial matches
-        results = exact_matches + partial_matches
+        # Use optimized search with caching and parallel execution
+        search_functions = {
+            "stocks": search_stocks,
+            "funds": search_funds,
+            "indices": search_indices,
+            "gold": search_gold
+        }
         
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_results = []
-        for result in results:
-            key = (result.symbol, result.asset_type)
-            if key not in seen:
-                seen.add(key)
-                unique_results.append(result)
+        # Execute optimized search
+        combined_results = await search_optimizer.optimized_search(
+            query=query,
+            search_functions=search_functions,
+            limit=limit,
+            use_cache=True
+        )
         
-        # Limit results
-        final_results = unique_results[:limit]
+        # Convert to SearchResult objects
+        search_results = [
+            SearchResult(
+                symbol=result["symbol"],
+                name=result["name"],
+                asset_type=result["asset_type"],
+                asset_class=result["asset_class"],
+                asset_sub_class=result["asset_sub_class"],
+                exchange=result["exchange"],
+                currency=result["currency"],
+                data_source=result["data_source"]
+            )
+            for result in combined_results[:limit]
+        ]
         
-        return SearchResponse(results=final_results, total=len(final_results))
+        return SearchResponse(results=search_results, total=len(search_results))
     except Exception as e:
         logger.error(f"Error in search_assets: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -900,6 +985,34 @@ async def search_asset(symbol: str):
     except Exception as e:
         logger.error(f"Error in search_asset: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize background tasks on startup."""
+    try:
+        # First, seed the cache with all available assets
+        logger.info("Starting cache seeding on startup...")
+        counts = await data_seeder.seed_all_assets(force_refresh=False)
+        logger.info(f"Initial seeding completed: {counts}")
+        
+        # Warm up popular assets
+        await data_seeder.refresh_popular_assets()
+        
+        # Start background cache tasks
+        await start_cache_background_tasks(cache_manager, stock_client, fund_client, gold_client)
+        logger.info("Background cache tasks started successfully")
+    except Exception as e:
+        logger.error(f"Error during startup: {e}")
+        # Continue startup even if seeding fails
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up background tasks on shutdown."""
+    try:
+        await stop_cache_background_tasks()
+        logger.info("Background cache tasks stopped successfully")
+    except Exception as e:
+        logger.error(f"Error stopping background tasks: {e}")
 
 if __name__ == "__main__":
     import uvicorn

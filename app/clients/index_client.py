@@ -7,8 +7,9 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 class IndexClient:
-    def __init__(self):
-        pass
+    def __init__(self, cache_manager=None, memory_cache=None):
+        self.cache_manager = cache_manager
+        self.memory_cache = memory_cache
     
     def get_index_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         try:
@@ -49,6 +50,23 @@ class IndexClient:
             return []
     
     def get_latest_quote(self, symbol: str) -> Optional[Dict]:
+        # Check memory cache first
+        if self.memory_cache:
+            cached_quote = self.memory_cache.get_quote(symbol, "INDEX")
+            if cached_quote:
+                logger.debug(f"Using cached index quote for {symbol}")
+                return cached_quote
+        
+        # Check persistent cache
+        if self.cache_manager:
+            cached_quote = self.cache_manager.get_quote(symbol, "INDEX")
+            if cached_quote:
+                logger.debug(f"Using persistent cached index quote for {symbol}")
+                # Also store in memory cache for faster access
+                if self.memory_cache:
+                    self.memory_cache.set_quote(symbol, "INDEX", cached_quote)
+                return cached_quote
+        
         try:
             today = datetime.now().strftime("%Y-%m-%d")
             quote = Quote(symbol=symbol, source='VCI')
@@ -70,7 +88,7 @@ class IndexClient:
             close_val = float(info.get("close", 0.0)) if not pd.isna(info.get("close")) else 0.0
             volume_val = float(info.get("volume", 0.0)) if not pd.isna(info.get("volume")) else 0.0
             
-            return {
+            quote_data = {
                 "symbol": symbol,
                 "open": open_val,
                 "high": high_val,
@@ -80,6 +98,14 @@ class IndexClient:
                 "volume": volume_val,
                 "date": date_str
             }
+            
+            # Cache the quote
+            if self.memory_cache:
+                self.memory_cache.set_quote(symbol, "INDEX", quote_data)
+            if self.cache_manager:
+                self.cache_manager.set_quote(symbol, "INDEX", quote_data)
+            
+            return quote_data
         except Exception as e:
             logger.error(f"Error fetching latest quote for index {symbol}: {e}")
             return None
