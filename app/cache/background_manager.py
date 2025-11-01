@@ -92,7 +92,7 @@ class BackgroundCacheManager:
                 logger.info(f"Refreshed {len(companies_df)} stock symbols")
                 
                 # Cache some popular stocks
-                popular_symbols = ["VNM", "FPT", "MWG", "VCB", "HDB", "ACB", "CTG", "BID", "TCB", "VPB"]
+                popular_symbols = ["VNM", "FPT", "MWG", "VCB", "BID", "TCB", "VIC"]
                 for symbol in popular_symbols:
                     try:
                         stock_info = self.stock_client.search_stock(symbol)

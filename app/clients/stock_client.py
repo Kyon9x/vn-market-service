@@ -117,7 +117,7 @@ class StockClient:
             return None
     
     def _get_companies_df(self):
-        """Get companies DataFrame with caching."""
+        """Get companies DataFrame with caching and filtering."""
         # Simple in-memory cache for companies data (refresh every hour)
         import time
         current_time = time.time()
@@ -128,11 +128,25 @@ class StockClient:
             return self._companies_cache
         
         try:
-            companies_df = self._listing.all_symbols()
-            self._companies_cache = companies_df
-            self._cache_timestamp = current_time
-            logger.info("Refreshed companies cache")
-            return companies_df
+            companies_df = self._listing.symbols_by_exchange()
+            
+            # Filter for active stocks only: type='STOCK' and exchange != 'DELISTED'
+            if companies_df is not None and not companies_df.empty:
+                # Apply filters
+                filtered_df = companies_df[
+                    (companies_df['type'] == 'STOCK') & 
+                    (companies_df['exchange'] != 'DELISTED')
+                ].copy()
+                
+                self._companies_cache = filtered_df
+                self._cache_timestamp = current_time
+                logger.info(f"Refreshed companies cache: {len(filtered_df)} active stocks (filtered from {len(companies_df)} total)")
+                return filtered_df
+            else:
+                self._companies_cache = companies_df
+                self._cache_timestamp = current_time
+                return companies_df
+                
         except Exception as e:
             logger.error(f"Error fetching companies data: {e}")
             return self._companies_cache  # Return stale cache if available
@@ -160,12 +174,12 @@ class StockClient:
                     info = company_row.iloc[0]
                     company_name = str(info.get("organ_name", symbol))
                     industry = str(info.get("organ_type", ""))
-                    company_type = str(info.get("com_type", ""))
+                    company_type = str(info.get("exchange", ""))  # Use exchange as company_type fallback
                     
                     result = {
                         "symbol": symbol,
                         "company_name": company_name,
-                        "exchange": "HOSE",
+                        "exchange": str(info.get("exchange", "HOSE")),
                         "industry": industry,
                         "company_type": company_type
                     }
@@ -178,7 +192,7 @@ class StockClient:
                             asset_type="STOCK",
                             asset_class="Equity",
                             asset_sub_class="Stock",
-                            exchange="HOSE",
+                            exchange=str(info.get("exchange", "HOSE")),
                             currency="VND",
                             metadata={"industry": industry, "company_type": company_type}
                         )
@@ -224,13 +238,13 @@ class StockClient:
                 
                 # Match on symbol or company name
                 if query_lower in symbol.lower() or query_lower in company_name.lower():
-                    industry = str(row.get("organ_type", ""))
-                    company_type = str(row.get("com_type", ""))
+                    industry = str(row.get("organ_short_name", ""))
+                    company_type = str(row.get("exchange", ""))  # Use exchange as company_type fallback
                     
                     result = {
                         "symbol": symbol,
                         "company_name": company_name,
-                        "exchange": "HOSE",
+                        "exchange": str(row.get("exchange", "HOSE")),
                         "industry": industry,
                         "company_type": company_type
                     }
@@ -244,7 +258,7 @@ class StockClient:
                             asset_type="STOCK",
                             asset_class="Equity",
                             asset_sub_class="Stock",
-                            exchange="HOSE",
+                            exchange=str(row.get("exchange", "HOSE")),
                             currency="VND",
                             metadata={"industry": industry, "company_type": company_type}
                         )
@@ -256,24 +270,3 @@ class StockClient:
         except Exception as e:
             logger.error(f"Error searching stocks by name '{query}': {e}")
             return []
-    
-    def _get_companies_df(self):
-        """Get companies DataFrame with caching."""
-        # Simple in-memory cache for companies data (refresh every hour)
-        import time
-        current_time = time.time()
-        
-        if (self._companies_cache is not None and 
-            self._cache_timestamp is not None and 
-            current_time - self._cache_timestamp < 3600):  # 1 hour cache
-            return self._companies_cache
-        
-        try:
-            companies_df = self._listing.all_symbols()
-            self._companies_cache = companies_df
-            self._cache_timestamp = current_time
-            logger.info("Refreshed companies cache")
-            return companies_df
-        except Exception as e:
-            logger.error(f"Error fetching companies data: {e}")
-            return self._companies_cache  # Return stale cache if available
