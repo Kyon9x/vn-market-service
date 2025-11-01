@@ -14,6 +14,13 @@ class StockClient:
         self.memory_cache = memory_cache
         self._companies_cache = None
         self._cache_timestamp = None
+        
+        # Exchange mapping for compatibility
+        self.exchange_mapping = {
+            'HSX': 'HOSE',  # Ho Chi Minh Stock Exchange
+            'HNX': 'HNX',   # Hanoi Stock Exchange  
+            'UPCOM': 'UPCOM' # Unlisted Public Company Market
+        }
     
     def get_stock_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         try:
@@ -160,7 +167,7 @@ class StockClient:
                 return {
                     "symbol": cached_asset['symbol'],
                     "company_name": cached_asset['name'],
-                    "exchange": cached_asset.get('exchange', 'HOSE'),
+                    "exchange": cached_asset.get('exchange', ''),
                     "industry": cached_asset['metadata'].get('industry', '') if cached_asset.get('metadata') else '',
                     "company_type": cached_asset['metadata'].get('company_type', '') if cached_asset.get('metadata') else ''
                 }
@@ -176,10 +183,13 @@ class StockClient:
                     industry = str(info.get("organ_type", ""))
                     company_type = str(info.get("exchange", ""))  # Use exchange as company_type fallback
                     
+                    raw_exchange = str(info.get("exchange", ""))
+                    mapped_exchange = self.exchange_mapping.get(raw_exchange, raw_exchange)
+                    
                     result = {
                         "symbol": symbol,
                         "company_name": company_name,
-                        "exchange": str(info.get("exchange", "HOSE")),
+                        "exchange": mapped_exchange,
                         "industry": industry,
                         "company_type": company_type
                     }
@@ -192,7 +202,7 @@ class StockClient:
                             asset_type="STOCK",
                             asset_class="Equity",
                             asset_sub_class="Stock",
-                            exchange=str(info.get("exchange", "HOSE")),
+                            exchange=mapped_exchange,
                             currency="VND",
                             metadata={"industry": industry, "company_type": company_type}
                         )
@@ -217,7 +227,7 @@ class StockClient:
                     {
                         "symbol": r['symbol'],
                         "company_name": r['name'],
-                        "exchange": r.get('exchange', 'HOSE'),
+                        "exchange": r.get('exchange', ''),
                         "industry": r.get('metadata', {}).get('industry', '') if r.get('metadata') else '',
                         "company_type": r.get('metadata', {}).get('company_type', '') if r.get('metadata') else ''
                     }
@@ -241,10 +251,13 @@ class StockClient:
                     industry = str(row.get("organ_short_name", ""))
                     company_type = str(row.get("exchange", ""))  # Use exchange as company_type fallback
                     
+                    raw_exchange = str(row.get("exchange", ""))
+                    mapped_exchange = self.exchange_mapping.get(raw_exchange, raw_exchange)
+                    
                     result = {
                         "symbol": symbol,
                         "company_name": company_name,
-                        "exchange": str(row.get("exchange", "HOSE")),
+                        "exchange": mapped_exchange,
                         "industry": industry,
                         "company_type": company_type
                     }
@@ -258,7 +271,7 @@ class StockClient:
                             asset_type="STOCK",
                             asset_class="Equity",
                             asset_sub_class="Stock",
-                            exchange=str(row.get("exchange", "HOSE")),
+                            exchange=mapped_exchange,
                             currency="VND",
                             metadata={"industry": industry, "company_type": company_type}
                         )

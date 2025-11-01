@@ -19,6 +19,13 @@ class BackgroundCacheManager:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._cleanup_thread: Optional[threading.Thread] = None
+        
+        # Exchange mapping for compatibility
+        self.exchange_mapping = {
+            'HSX': 'HOSE',  # Ho Chi Minh Stock Exchange
+            'HNX': 'HNX',   # Hanoi Stock Exchange  
+            'UPCOM': 'UPCOM' # Unlisted Public Company Market
+        }
     
     async def start_background_tasks(self):
         """Start background cache management tasks."""
@@ -103,7 +110,7 @@ class BackgroundCacheManager:
                                 asset_type="STOCK",
                                 asset_class="Equity",
                                 asset_sub_class="Stock",
-                                exchange=stock_info.get("exchange", "HOSE"),
+                                exchange=stock_info.get("exchange", ""),
                                 currency="VND",
                                 metadata={
                                     "industry": stock_info.get("industry", ""),

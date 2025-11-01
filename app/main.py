@@ -597,7 +597,7 @@ async def search_assets(
                         "asset_type": "STOCK",
                         "asset_class": "Equity",
                         "asset_sub_class": "Stock",
-                        "exchange": stock_info.get("exchange", "HOSE"),
+                        "exchange": stock_info.get("exchange", ""),
                         "currency": "VND",
                         "data_source": "VN_MARKET"
                     })
@@ -613,7 +613,7 @@ async def search_assets(
                             "asset_type": "STOCK",
                             "asset_class": "Equity",
                             "asset_sub_class": "Stock",
-                            "exchange": stock.get("exchange", "HOSE"),
+                            "exchange": stock.get("exchange", ""),
                             "currency": "VND",
                             "data_source": "VN_MARKET"
                         })
@@ -964,7 +964,7 @@ async def search_asset(symbol: str):
                     "asset_type": "STOCK",
                     "asset_class": "Equity",
                     "asset_sub_class": "Stock",
-                    "exchange": stock_info.get("exchange", "HOSE"),
+                    "exchange": stock_info.get("exchange", ""),
                     "currency": "VND",
                     "data_source": "VN_MARKET"
                 }

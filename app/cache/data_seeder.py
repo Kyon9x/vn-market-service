@@ -17,6 +17,13 @@ class DataSeeder:
         self.gold_client = gold_client
         self._seeding_progress = 0
         self._total_assets = 0
+        
+        # Exchange mapping for compatibility
+        self.exchange_mapping = {
+            'HSX': 'HOSE',  # Ho Chi Minh Stock Exchange
+            'HNX': 'HNX',   # Hanoi Stock Exchange  
+            'UPCOM': 'UPCOM' # Unlisted Public Company Market
+        }
     
     async def seed_all_assets(self, force_refresh: bool = False) -> Dict[str, int]:
         """
@@ -111,6 +118,8 @@ class DataSeeder:
                         company_name = str(row.get("organ_name", "")).strip()
                         industry = str(row.get("organ_type", "")).strip()
                         company_type = str(row.get("com_type", "")).strip()
+                        exchange = str(row.get("exchange", "")).strip()
+                        mapped_exchange = self.exchange_mapping.get(exchange, exchange)
                         
                         if symbol and company_name:
                             self.cache_manager.set_asset(
@@ -119,7 +128,7 @@ class DataSeeder:
                                 asset_type="STOCK",
                                 asset_class="Equity",
                                 asset_sub_class="Stock",
-                                exchange="HOSE",  # Default, could be enhanced
+                                exchange=mapped_exchange,  # Use mapped exchange from data
                                 currency="VND",
                                 metadata={
                                     "industry": industry,
