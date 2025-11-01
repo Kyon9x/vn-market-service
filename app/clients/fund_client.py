@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
 import pandas as pd
+import time
+from requests.exceptions import Timeout, ConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -12,39 +14,88 @@ class FundClient:
         self._funds_map: Dict[str, int] = {}
         self._cache_timestamp: Optional[datetime] = None
         self._cache_duration = timedelta(hours=24)
-        self._fund_api = Fund()
+        self._fund_api = self._initialize_fund_api()
         self.cache_manager = cache_manager
         self.memory_cache = memory_cache
+    
+    def _initialize_fund_api(self, max_retries: int = 3) -> Fund:
+        """Initialize Fund API with retry logic for timeout handling."""
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Initializing Fund API (attempt {attempt + 1}/{max_retries})...")
+                fund_api = Fund()
+                logger.info("Fund API initialized successfully")
+                return fund_api
+            except (Timeout, ConnectionError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.warning(f"Fund API initialization timeout/connection error. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Fund API initialization failed after {max_retries} retries: {e}")
+            except Exception as e:
+                logger.error(f"Fund API initialization error: {e}")
+                last_error = e
+                break
+        
+        if last_error:
+            raise last_error
+        
+        raise RuntimeError("Fund API initialization failed - no error details available")
     
     def _is_cache_valid(self) -> bool:
         if self._cache_timestamp is None:
             return False
         return datetime.now() - self._cache_timestamp < self._cache_duration
     
-    def _refresh_funds_cache(self):
+    def _refresh_funds_cache(self, max_retries: int = 3):
+        """Fetch fresh fund list from vnstock with retry logic."""
         logger.info("Fetching fresh fund list from vnstock")
-        funds_df = self._fund_api.listing()
         
-        funds: List[Dict] = []
-        self._funds_map = {}
-        for _, row in funds_df.iterrows():
-            fund_code = row.get("fund_code", "")
-            short_name = row.get("short_name", "")
-            fund_id_value = row.get("fund_id_fmarket", 0)
-            fund_id = int(fund_id_value) if fund_id_value else 0
-            funds.append({
-                "symbol": short_name if short_name else fund_code,
-                "fund_name": row.get("name", ""),
-                "asset_type": "MUTUAL_FUND"
-            })
-            if fund_code:
-                self._funds_map[fund_code.upper()] = fund_id
-            if short_name:
-                self._funds_map[short_name.upper()] = fund_id
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Fetching fund listing (attempt {attempt + 1}/{max_retries})...")
+                funds_df = self._fund_api.listing()
+                
+                funds: List[Dict] = []
+                self._funds_map = {}
+                for _, row in funds_df.iterrows():
+                    fund_code = row.get("fund_code", "")
+                    short_name = row.get("short_name", "")
+                    fund_id_value = row.get("fund_id_fmarket", 0)
+                    fund_id = int(fund_id_value) if fund_id_value else 0
+                    funds.append({
+                        "symbol": short_name if short_name else fund_code,
+                        "fund_name": row.get("name", ""),
+                        "asset_type": "MUTUAL_FUND"
+                    })
+                    if fund_code:
+                        self._funds_map[fund_code.upper()] = fund_id
+                    if short_name:
+                        self._funds_map[short_name.upper()] = fund_id
+                
+                self._funds_cache = funds
+                self._cache_timestamp = datetime.now()
+                logger.info(f"Cached {len(funds)} funds successfully")
+                return
+                
+            except (Timeout, ConnectionError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.warning(f"Fund listing fetch timeout/connection error. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Fund listing fetch failed after {max_retries} retries: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching fund list: {e}")
+                raise
         
-        self._funds_cache = funds
-        self._cache_timestamp = datetime.now()
-        logger.info(f"Cached {len(funds)} funds")
+        if last_error:
+            raise last_error
     
     def get_funds_list(self) -> List[Dict]:
         if self._is_cache_valid() and self._funds_cache:
@@ -105,44 +156,64 @@ class FundClient:
             logger.error(f"Error searching fund {symbol}: {e}")
             return None
     
-    def get_fund_nav_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
-        try:
-            fund_id = self._get_fund_id(symbol)
-            if not fund_id:
-                logger.warning(f"Fund ID not found for symbol: {symbol}")
+    def get_fund_nav_history(self, symbol: str, start_date: str, end_date: str, max_retries: int = 2) -> List[Dict]:
+        """Fetch NAV history with retry logic for transient API errors."""
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                fund_id = self._get_fund_id(symbol)
+                if not fund_id:
+                    logger.warning(f"Fund ID not found for symbol: {symbol}")
+                    return []
+                
+                logger.info(f"Fetching NAV history for {symbol} (attempt {attempt + 1}/{max_retries})...")
+                history_df = self._fund_api.nav_report(fund_id)
+                
+                if history_df is None or history_df.empty:
+                    return []
+                
+                history_df['date'] = pd.to_datetime(history_df['date'])
+                history_df = history_df[(history_df['date'] >= start_date) & (history_df['date'] <= end_date)]
+                
+                history = []
+                for _, row in history_df.iterrows():
+                    nav_value = row.get("nav_per_unit", 0.0)
+                    nav = float(nav_value) if nav_value else 0.0
+                    date_val = row.get("date")
+                    date_str = date_val.strftime("%Y-%m-%d") if isinstance(date_val, pd.Timestamp) else str(date_val)
+                    history.append({
+                        "date": date_str,
+                        "nav": nav,
+                        "open": nav,
+                        "high": nav,
+                        "low": nav,
+                        "close": nav,
+                        "adjclose": nav,
+                        "volume": 0.0
+                    })
+                
+                return history
+                
+            except (Timeout, ConnectionError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"NAV history fetch timeout/connection error for {symbol}. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"NAV history fetch failed after {max_retries} retries for {symbol}: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching NAV history for {symbol}: {e}")
                 return []
-            
-            history_df = self._fund_api.nav_report(fund_id)
-            
-            if history_df is None or history_df.empty:
-                return []
-            
-            history_df['date'] = pd.to_datetime(history_df['date'])
-            history_df = history_df[(history_df['date'] >= start_date) & (history_df['date'] <= end_date)]
-            
-            history = []
-            for _, row in history_df.iterrows():
-                nav_value = row.get("nav_per_unit", 0.0)
-                nav = float(nav_value) if nav_value else 0.0
-                date_val = row.get("date")
-                date_str = date_val.strftime("%Y-%m-%d") if isinstance(date_val, pd.Timestamp) else str(date_val)
-                history.append({
-                    "date": date_str,
-                    "nav": nav,
-                    "open": nav,
-                    "high": nav,
-                    "low": nav,
-                    "close": nav,
-                    "adjclose": nav,
-                    "volume": 0.0
-                })
-            
-            return history
-        except Exception as e:
-            logger.error(f"Error fetching NAV history for {symbol}: {e}")
-            return []
+        
+        if last_error:
+            logger.error(f"NAV history fetch failed for {symbol} after {max_retries} retries")
+        
+        return []
     
-    def get_latest_nav(self, symbol: str) -> Optional[Dict]:
+    def get_latest_nav(self, symbol: str, max_retries: int = 2) -> Optional[Dict]:
+        """Get latest NAV with retry logic."""
         # Check memory cache first
         if self.memory_cache:
             cached_quote = self.memory_cache.get_quote(symbol, "FUND")
@@ -160,49 +231,66 @@ class FundClient:
                     self.memory_cache.set_quote(symbol, "FUND", cached_quote)
                 return cached_quote
         
-        try:
-            fund_id = self._get_fund_id(symbol)
-            if not fund_id:
-                logger.warning(f"Fund ID not found for symbol: {symbol}")
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                fund_id = self._get_fund_id(symbol)
+                if not fund_id:
+                    logger.warning(f"Fund ID not found for symbol: {symbol}")
+                    return None
+                
+                logger.info(f"Fetching latest NAV for {symbol} (attempt {attempt + 1}/{max_retries})...")
+                nav_df = self._fund_api.nav_report(fund_id)
+                if nav_df is None or nav_df.empty:
+                    return None
+                
+                info = nav_df.iloc[-1]
+                date_val = info.get("date")
+                if isinstance(date_val, pd.Timestamp):
+                    date_str = date_val.strftime("%Y-%m-%d")
+                else:
+                    date_str = str(date_val) if date_val else datetime.now().strftime("%Y-%m-%d")
+                
+                nav_value = info.get("nav_per_unit", 0.0)
+                nav_float = float(nav_value) if nav_value else 0.0
+                
+                # For funds, we'll set OHLC values to the NAV since that's the primary price metric
+                quote_data = {
+                    "symbol": symbol,
+                    "open": nav_float,
+                    "high": nav_float,
+                    "low": nav_float,
+                    "close": nav_float,
+                    "adjclose": nav_float,
+                    "volume": 0.0,  # Funds typically don't have volume data
+                    "nav": nav_float,
+                    "date": date_str
+                }
+                
+                # Cache the quote
+                if self.memory_cache:
+                    self.memory_cache.set_quote(symbol, "FUND", quote_data)
+                if self.cache_manager:
+                    self.cache_manager.set_quote(symbol, "FUND", quote_data)
+                
+                return quote_data
+                
+            except (Timeout, ConnectionError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Latest NAV fetch timeout/connection error for {symbol}. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Latest NAV fetch failed after {max_retries} retries for {symbol}: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching latest NAV for {symbol}: {e}")
                 return None
-            
-            nav_df = self._fund_api.nav_report(fund_id)
-            if nav_df is None or nav_df.empty:
-                return None
-            
-            info = nav_df.iloc[-1]
-            date_val = info.get("date")
-            if isinstance(date_val, pd.Timestamp):
-                date_str = date_val.strftime("%Y-%m-%d")
-            else:
-                date_str = str(date_val) if date_val else datetime.now().strftime("%Y-%m-%d")
-            
-            nav_value = info.get("nav_per_unit", 0.0)
-            nav_float = float(nav_value) if nav_value else 0.0
-            
-            # For funds, we'll set OHLC values to the NAV since that's the primary price metric
-            quote_data = {
-                "symbol": symbol,
-                "open": nav_float,
-                "high": nav_float,
-                "low": nav_float,
-                "close": nav_float,
-                "adjclose": nav_float,
-                "volume": 0.0,  # Funds typically don't have volume data
-                "nav": nav_float,
-                "date": date_str
-            }
-            
-            # Cache the quote
-            if self.memory_cache:
-                self.memory_cache.set_quote(symbol, "FUND", quote_data)
-            if self.cache_manager:
-                self.cache_manager.set_quote(symbol, "FUND", quote_data)
-            
-            return quote_data
-        except Exception as e:
-            logger.error(f"Error fetching latest NAV for {symbol}: {e}")
-            return None
+        
+        if last_error:
+            logger.error(f"Latest NAV fetch failed for {symbol} after {max_retries} retries")
+        
+        return None
     
     def search_funds_by_name(self, query: str, limit: int = 10) -> List[Dict]:
         """Search funds by partial name or symbol match (case-insensitive)."""

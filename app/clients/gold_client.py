@@ -77,7 +77,7 @@ class GoldClient:
             
             return history
         except ValueError as e:
-            logger.error(f"Invalid symbol: {e}")
+            logger.debug(f"Invalid symbol: {e}")
             return []
         except Exception as e:
             logger.error(f"Error fetching gold history for {symbol}: {e}")
@@ -249,7 +249,7 @@ class GoldClient:
             
             return quote_data
         except ValueError as e:
-            logger.error(f"Invalid symbol: {e}")
+            logger.debug(f"Invalid symbol: {e}")
             return None
         except Exception as e:
             logger.error(f"Error fetching gold quote for {symbol}: {e}")
@@ -384,7 +384,7 @@ class GoldClient:
                 "currency": currency
             }
         except ValueError as e:
-            logger.error(f"Invalid symbol: {e}")
+            logger.debug(f"Invalid symbol: {e}")
             return None
         except Exception as e:
             logger.error(f"Error searching gold: {e}")

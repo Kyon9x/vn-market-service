@@ -1,10 +1,14 @@
 import sys
+import os
 
 # Check Python version requirement (3.9+)
 if sys.version_info < (3, 10):
     raise RuntimeError(
         f"Python 3.10 or higher is required. Current version: {sys.version_info.major}.{sys.version_info.minor}"
     )
+
+# Configure vnstock timeout before importing clients
+from app import vnstock_config
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -130,12 +134,48 @@ app.add_middleware(
 
 # Initialize cache manager and clients
 cache_manager = CacheManager()
-fund_client = FundClient(cache_manager, quote_cache)
-stock_client = StockClient(cache_manager, quote_cache)
-index_client = IndexClient(cache_manager, quote_cache)
-gold_client = GoldClient(cache_manager, quote_cache)
-search_optimizer = get_search_optimizer(cache_manager, search_cache)
-data_seeder = get_data_seeder(cache_manager, stock_client, fund_client, gold_client)
+
+# Initialize clients with error handling
+try:
+    logger.info("Initializing FundClient...")
+    fund_client = FundClient(cache_manager, quote_cache)
+except Exception as e:
+    logger.error(f"Failed to initialize FundClient: {e}")
+    logger.warning("Proceeding with degraded fund service - fund requests may fail")
+    fund_client = None
+
+try:
+    logger.info("Initializing StockClient...")
+    stock_client = StockClient(cache_manager, quote_cache)
+except Exception as e:
+    logger.error(f"Failed to initialize StockClient: {e}")
+    logger.warning("Proceeding with degraded stock service - stock requests may fail")
+    stock_client = None
+
+try:
+    logger.info("Initializing IndexClient...")
+    index_client = IndexClient(cache_manager, quote_cache)
+except Exception as e:
+    logger.error(f"Failed to initialize IndexClient: {e}")
+    logger.warning("Proceeding with degraded index service - index requests may fail")
+    index_client = None
+
+try:
+    logger.info("Initializing GoldClient...")
+    gold_client = GoldClient(cache_manager, quote_cache)
+except Exception as e:
+    logger.error(f"Failed to initialize GoldClient: {e}")
+    logger.warning("Proceeding with degraded gold service - gold requests may fail")
+    gold_client = None
+
+# Initialize search and data seeder (may fail if clients failed)
+try:
+    search_optimizer = get_search_optimizer(cache_manager, search_cache)
+    data_seeder = get_data_seeder(cache_manager, stock_client, fund_client, gold_client)
+except Exception as e:
+    logger.error(f"Failed to initialize search optimizer or data seeder: {e}")
+    search_optimizer = None
+    data_seeder = None
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -208,6 +248,8 @@ async def get_seeding_progress():
 @app.get("/funds", response_model=FundListResponse)
 async def get_funds_list():
     try:
+        if not fund_client:
+            raise HTTPException(status_code=503, detail="Fund service is temporarily unavailable. API timeout or connection issue detected.")
         funds = fund_client.get_funds_list()
         validated_funds = []
         for f in funds:
@@ -235,6 +277,8 @@ async def get_funds_list():
 @app.get("/funds/search/{symbol}", response_model=FundSearchResponse)
 async def search_fund(symbol: str):
     try:
+        if not fund_client:
+            raise HTTPException(status_code=503, detail="Fund service is temporarily unavailable. API timeout or connection issue detected.")
         symbol = symbol.upper()
         fund_info = fund_client.search_fund_by_symbol(symbol)
         
@@ -251,6 +295,8 @@ async def search_fund(symbol: str):
 @app.get("/funds/quote/{symbol}", response_model=FundQuoteResponse)
 async def get_fund_quote(symbol: str):
     try:
+        if not fund_client:
+            raise HTTPException(status_code=503, detail="Fund service is temporarily unavailable. API timeout or connection issue detected.")
         symbol = symbol.upper()
         quote = fund_client.get_latest_nav(symbol)
         
@@ -271,6 +317,8 @@ async def get_fund_history(
     end_date: str = Query(None, description="End date in YYYY-MM-DD format")
 ):
     try:
+        if not fund_client:
+            raise HTTPException(status_code=503, detail="Fund service is temporarily unavailable. API timeout or connection issue detected.")
         symbol = symbol.upper()
         
         if not end_date:
