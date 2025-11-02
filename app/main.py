@@ -39,6 +39,7 @@ from app.cache.memory_cache import quote_cache, search_cache, cleanup_expired_ca
 from app.cache.search_optimizer import get_search_optimizer
 from app.cache.background_manager import start_cache_background_tasks, stop_cache_background_tasks
 from app.cache.data_seeder import get_data_seeder
+from app.cache.gold_static_seeder import get_gold_seeder
 import logging
 from datetime import datetime, timedelta
 import asyncio
@@ -243,6 +244,25 @@ async def get_seeding_progress():
         return progress
     except Exception as e:
         logger.error(f"Error getting seeding progress: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/gold/seed")
+async def seed_gold_historical():
+    """Manually trigger gold historical data seeding."""
+    try:
+        from app.cache.gold_static_seeder import get_gold_seeder
+        gold_seeder = get_gold_seeder()
+        
+        logger.info("Manual gold historical seeding triggered")
+        stats = gold_seeder.seed_all_data(resume=True)
+        
+        return {
+            "status": "success",
+            "message": "Gold historical data seeding completed successfully",
+            "data": stats
+        }
+    except Exception as e:
+        logger.error(f"Error during gold seeding: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/funds", response_model=FundListResponse)
@@ -1043,6 +1063,10 @@ async def startup_event():
         logger.info("Starting cache seeding on startup...")
         counts = await data_seeder.seed_all_assets(force_refresh=False)
         logger.info(f"Initial seeding completed: {counts}")
+        
+        # Note: Gold static seeding can be triggered manually via /gold/seed endpoint
+        # This avoids startup delays and allows seeding when needed
+        logger.info("Gold static seeding available via /gold/seed endpoint")
         
         # Note: Not refreshing popular asset quotes on startup to avoid delays
         # Quotes will be fetched on-demand when accessed

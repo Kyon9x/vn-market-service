@@ -12,6 +12,7 @@ This module protects against API rate limits by:
 import time
 import threading
 import logging
+import re
 from typing import Dict, Optional, List, Callable, Any
 from datetime import datetime, timedelta
 from collections import deque
@@ -303,6 +304,157 @@ class RateLimitProtector:
             return 0.0
         
         return self._calculate_wait_time()
+    
+    def detect_vietnamese_rate_limit(self, error_message: str) -> bool:
+        """
+        Detect if error message indicates Vietnamese rate limiting.
+        
+        Args:
+            error_message: Error message from API call
+            
+        Returns:
+            True if rate limit detected, False otherwise
+        """
+        if not error_message:
+            return False
+        
+        error_lower = error_message.lower()
+        rate_limit_patterns = [
+            "quá nhiều request",
+            "request tới misc", 
+            "thử lại sau",
+            "giây",
+            "đã gửi quá nhiều",
+            "vui lòng thử lại",
+            "too many requests",
+            "rate limit",
+            "retry after",
+            "throttled"
+        ]
+        
+        return any(pattern in error_lower for pattern in rate_limit_patterns)
+    
+    def parse_wait_time_from_error(self, error_message: str) -> int:
+        """
+        Parse wait time from Vietnamese/English error message.
+        
+        Args:
+            error_message: Error message containing wait time
+            
+        Returns:
+            Wait time in seconds (default 15 if parsing fails)
+        """
+        if not error_message:
+            return 15
+        
+        # Patterns for Vietnamese and English
+        patterns = [
+            r'(\d+)\s*giây',      # Vietnamese: 15 giây
+            r'(\d+)\s*seconds?',   # English: 15 seconds
+            r'(\d+)\s*sec',       # Short: 15 sec
+            r'(\d+)\s*second',     # Singular: 1 second
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, error_message, re.IGNORECASE)
+            if match:
+                try:
+                    return int(match.group(1))
+                except (ValueError, IndexError):
+                    continue
+        
+        # Default wait time
+        return 15
+    
+    def adaptive_wait_for_rate_limit(self, error_message: str) -> float:
+        """
+        Calculate adaptive wait time based on error message.
+        
+        Args:
+            error_message: Error message from API
+            
+        Returns:
+            Recommended wait time in seconds
+        """
+        if self.detect_vietnamese_rate_limit(error_message):
+            # Parse specific wait time from error message
+            parsed_time = self.parse_wait_time_from_error(error_message)
+            
+            # Add buffer time to be safe
+            wait_time = parsed_time + 2
+            
+            logger.warning(f"Rate limit detected: waiting {wait_time}s (parsed: {parsed_time}s)")
+            return wait_time
+        
+        # Default adaptive wait
+        return self._calculate_wait_time()
+    
+    def execute_with_rate_limit_retry(self, func: Callable, *args, max_retries: int = 3, **kwargs) -> Any:
+        """
+        Execute function with intelligent rate limit retry logic.
+        
+        Args:
+            func: Function to execute
+            *args: Function arguments
+            max_retries: Maximum retry attempts
+            **kwargs: Function keyword arguments
+            
+        Returns:
+            Function result
+            
+        Raises:
+            Exception: If all retries fail
+        """
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Wait for available slot
+                if not self.wait_for_slot(timeout=30):
+                    raise Exception("Rate limit timeout - unable to get slot")
+                
+                # Execute function
+                result = func(*args, **kwargs)
+                
+                # Record successful call
+                self.record_call()
+                
+                # Reset consecutive error counter on success
+                if hasattr(self, '_consecutive_errors'):
+                    self._consecutive_errors = 0
+                
+                return result
+                
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                
+                # Check if this is a rate limit error
+                if self.detect_vietnamese_rate_limit(error_msg):
+                    wait_time = self.adaptive_wait_for_rate_limit(error_msg)
+                    
+                    if attempt < max_retries:
+                        logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries + 1}): waiting {wait_time}s")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(f"Rate limit exceeded after {max_retries + 1} attempts")
+                        raise
+                else:
+                    # Non-rate-limit error, record call and retry
+                    self.record_call()
+                    
+                    if attempt < max_retries:
+                        # Exponential backoff for other errors
+                        backoff_time = min(2 ** attempt, 10)  # Max 10 seconds
+                        logger.debug(f"Non-rate-limit error (attempt {attempt + 1}): {e}, retrying in {backoff_time}s")
+                        time.sleep(backoff_time)
+                    else:
+                        logger.error(f"Failed after {max_retries + 1} attempts: {e}")
+                        raise
+        
+        # This should never be reached, but just in case
+        raise last_error
 
 class RateLimitedAPI:
     """

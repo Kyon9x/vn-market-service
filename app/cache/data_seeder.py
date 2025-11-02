@@ -253,11 +253,11 @@ class DataSeeder:
             return {'count': 0}
     
     async def _seed_gold_providers(self) -> Dict[str, int]:
-        """Seed all gold providers."""
+        """Seed SJC gold providers only."""
         try:
-            logger.info("Seeding gold providers...")
+            logger.info("Seeding SJC gold providers...")
             
-            # Get all gold providers
+            # Get SJC gold providers only
             gold_providers = self.gold_client.get_all_gold_providers()
             if not gold_providers:
                 logger.warning("No gold provider data available")
@@ -273,30 +273,31 @@ class DataSeeder:
                         asset_class="Commodity",
                         asset_sub_class="Precious Metal",
                         exchange=provider["exchange"],
-                        currency=provider["currency"],
+                        currency=provider["currency"],  # Always VND for SJC
                         metadata={
                             "provider": provider.get("provider", ""),
                             "provider_name": provider.get("provider_name", ""),
-                            "listing_source": "vnstock_gold"
+                            "listing_source": "vnstock_sjc_gold"
                         }
                     )
                     gold_seeded += 1
+                    logger.debug(f"Seeded gold provider: {provider['symbol']} -> {provider['name']}")
                 except Exception as e:
                     logger.debug(f"Error seeding gold provider {provider.get('symbol', 'unknown')}: {e}")
             
-            logger.info(f"Successfully seeded {gold_seeded} gold providers")
-            return {'count': int(gold_seeded)}
+            logger.info(f"Successfully seeded {gold_seeded} SJC gold providers")
+            return {'count': gold_seeded}
             
         except Exception as e:
             logger.error(f"Error seeding gold providers: {e}")
             return {'count': 0}
     
-    def get_seeding_progress(self) -> Dict[str, int]:
+    def get_seeding_progress(self) -> Dict[str, float]:
         """Get current seeding progress."""
         return {
             "progress": self._seeding_progress,
             "total": self._total_assets,
-            "percentage": (self._seeding_progress / self._total_assets * 100) if self._total_assets > 0 else 0
+            "percentage": int((self._seeding_progress / self._total_assets * 100) if self._total_assets > 0 else 0)
         }
     
     async def refresh_popular_assets(self):
@@ -308,7 +309,7 @@ class DataSeeder:
             popular_stocks = ["VNM", "FPT", "MWG", "VCB", "HDB", "ACB", "CTG", "BID", "TCB", "VPB"]
             popular_funds = ["VESAF", "VOF", "EVF", "SSBF", "VCBF"]
             popular_indices = ["VNINDEX", "VN30"]
-            popular_gold = ["VN.GOLD", "SJC.GOLD", "BTMC.GOLD"]
+            popular_gold = ["VN.GOLD", "SJC.GOLD"]
             
             # Refresh quotes in parallel
             refresh_tasks = []
