@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import logging
 import pandas as pd
+from app.utils.provider_logger import log_provider_call
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,19 @@ class GoldClient:
     def __init__(self, cache_manager=None, memory_cache=None):
         self.cache_manager = cache_manager
         self.memory_cache = memory_cache
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"rows": lambda r: len(r) if r is not None else 0})
+    def _fetch_sjc_gold_from_provider(self, date: str) -> Optional[pd.DataFrame]:
+        return sjc_gold_price(date=date)
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"rows": lambda r: len(r) if r is not None else 0})
+    def _fetch_btmc_gold_from_provider(self) -> Optional[pd.DataFrame]:
+        return btmc_goldprice()
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"rows": lambda r: len(r) if r is not None else 0})
+    def _fetch_msn_gold_from_provider(self, symbol: str, source: str) -> Optional:
+        vnstock = Vnstock()
+        return vnstock.world_index(symbol=symbol, source=source)
     
     def parse_symbol(self, symbol: str) -> Tuple[str, str]:
         """
@@ -96,7 +110,7 @@ class GoldClient:
                 date_str = current_dt.strftime("%Y-%m-%d")
                 
                 try:
-                    df = sjc_gold_price(date=date_str)
+                    df = self._fetch_sjc_gold_from_provider(date_str)
                     
                     if df is not None and not df.empty:
                         info = df.iloc[0]
@@ -143,7 +157,7 @@ class GoldClient:
                 date_str = current_dt.strftime("%Y-%m-%d")
                 
                 try:
-                    df = btmc_goldprice()
+                    df = self._fetch_btmc_gold_from_provider()
                     
                     if df is not None and not df.empty:
                         info = df.iloc[0]
@@ -180,8 +194,7 @@ class GoldClient:
     def _get_msn_history(self, start_date: str, end_date: str) -> List[Dict]:
         """Fetch MSN/world gold commodity historical prices."""
         try:
-            vnstock = Vnstock()
-            gold_idx = vnstock.world_index(symbol='GOLD', source='MSN')
+            gold_idx = self._fetch_msn_gold_from_provider('GOLD', 'MSN')
             
             df = gold_idx.quote.history(start=start_date, end=end_date, interval='1D')
             

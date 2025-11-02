@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List, Dict, Optional
 import logging
 import pandas as pd
+from app.utils.provider_logger import log_provider_call
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,15 @@ class StockClient:
             'UPCOM': 'UPCOM' # Unlisted Public Company Market
         }
     
+    @log_provider_call(provider_name="vnstock", metadata_fields={"symbol": lambda r: r[0].get("symbol") if r else None})
+    def _fetch_stock_history_from_provider(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
+        quote = Quote(symbol=symbol, source='VCI')
+        history_df = quote.history(start=start_date, end=end_date)
+        return history_df
+    
     def get_stock_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         try:
-            quote = Quote(symbol=symbol, source='VCI')
-            history_df = quote.history(start=start_date, end=end_date)
+            history_df = self._fetch_stock_history_from_provider(symbol, start_date, end_date)
             
             if history_df is None or history_df.empty:
                 return []
@@ -61,6 +67,13 @@ class StockClient:
             logger.error(f"Error fetching stock history for {symbol}: {e}")
             return []
     
+    @log_provider_call(provider_name="vnstock", metadata_fields={"symbol": lambda r: r.get("symbol") if isinstance(r, dict) else None})
+    def _fetch_latest_quote_from_provider(self, symbol: str) -> Optional[Dict]:
+        today = datetime.now().strftime("%Y-%m-%d")
+        quote = Quote(symbol=symbol, source='VCI')
+        quote_df = quote.history(start=today, end=today)
+        return quote_df
+    
     def get_latest_quote(self, symbol: str) -> Optional[Dict]:
         # Check memory cache first
         if self.memory_cache:
@@ -80,9 +93,7 @@ class StockClient:
                 return cached_quote
         
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            quote = Quote(symbol=symbol, source='VCI')
-            quote_df = quote.history(start=today, end=today)
+            quote_df = self._fetch_latest_quote_from_provider(symbol)
             
             if quote_df is None or quote_df.empty:
                 return None
@@ -123,6 +134,10 @@ class StockClient:
             logger.error(f"Error fetching latest quote for {symbol}: {e}")
             return None
     
+    @log_provider_call(provider_name="vnstock", metadata_fields={"count": lambda r: len(r) if r is not None else 0})
+    def _fetch_companies_from_provider(self) -> Optional[pd.DataFrame]:
+        return self._listing.symbols_by_exchange()
+    
     def _get_companies_df(self):
         """Get companies DataFrame with caching and filtering."""
         # Simple in-memory cache for companies data (refresh every hour)
@@ -135,7 +150,7 @@ class StockClient:
             return self._companies_cache
         
         try:
-            companies_df = self._listing.symbols_by_exchange()
+            companies_df = self._fetch_companies_from_provider()
             
             # Filter for active stocks only: type='STOCK' and exchange != 'DELISTED'
             if companies_df is not None and not companies_df.empty:

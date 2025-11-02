@@ -5,6 +5,7 @@ import logging
 import pandas as pd
 import time
 from requests.exceptions import Timeout, ConnectionError
+from app.utils.provider_logger import log_provider_call
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,14 @@ class FundClient:
             return False
         return datetime.now() - self._cache_timestamp < self._cache_duration
     
+    @log_provider_call(provider_name="vnstock", metadata_fields={"count": lambda r: len(r) if r is not None else 0})
+    def _fetch_funds_listing_from_provider(self) -> Optional[pd.DataFrame]:
+        return self._fund_api.listing()
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"fund_id": lambda r: f"id_{r}" if r is not None else None})
+    def _fetch_fund_nav_report_from_provider(self, fund_id: int) -> Optional[pd.DataFrame]:
+        return self._fund_api.nav_report(fund_id)
+    
     def _refresh_funds_cache(self, max_retries: int = 3):
         """Fetch fresh fund list from vnstock with retry logic."""
         logger.info("Fetching fresh fund list from vnstock")
@@ -58,7 +67,7 @@ class FundClient:
         for attempt in range(max_retries):
             try:
                 logger.info(f"Fetching fund listing (attempt {attempt + 1}/{max_retries})...")
-                funds_df = self._fund_api.listing()
+                funds_df = self._fetch_funds_listing_from_provider()
                 
                 funds: List[Dict] = []
                 self._funds_map = {}
@@ -129,7 +138,7 @@ class FundClient:
                 logger.warning(f"Fund ID not found for symbol: {symbol}")
                 return None
             
-            fund_info = self._fund_api.nav_report(fund_id)
+            fund_info = self._fetch_fund_nav_report_from_provider(fund_id)
             if fund_info is None or fund_info.empty:
                 return None
             
@@ -168,7 +177,7 @@ class FundClient:
                     return []
                 
                 logger.info(f"Fetching NAV history for {symbol} (attempt {attempt + 1}/{max_retries})...")
-                history_df = self._fund_api.nav_report(fund_id)
+                history_df = self._fetch_fund_nav_report_from_provider(fund_id)
                 
                 if history_df is None or history_df.empty:
                     return []
@@ -240,7 +249,7 @@ class FundClient:
                     return None
                 
                 logger.info(f"Fetching latest NAV for {symbol} (attempt {attempt + 1}/{max_retries})...")
-                nav_df = self._fund_api.nav_report(fund_id)
+                nav_df = self._fetch_fund_nav_report_from_provider(fund_id)
                 if nav_df is None or nav_df.empty:
                     return None
                 
