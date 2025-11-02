@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
 import pandas as pd
+from app.utils.provider_logger import log_provider_call
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,12 @@ class StockClient:
             'HNX': 'HNX',   # Hanoi Stock Exchange  
             'UPCOM': 'UPCOM' # Unlisted Public Company Market
         }
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"symbol": lambda r: r[0].get("symbol") if r else None})
+    def _fetch_stock_history_from_provider(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
+        quote = Quote(symbol=symbol, source='VCI')
+        history_df = quote.history(start=start_date, end=end_date)
+        return history_df
     
     def get_stock_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         """Get stock history with incremental caching support."""
@@ -108,8 +115,7 @@ class StockClient:
     def _fetch_stock_history_raw(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         """Fetch stock history from API without caching logic."""
         try:
-            quote = Quote(symbol=symbol, source='VCI')
-            history_df = quote.history(start=start_date, end=end_date)
+            history_df = self._fetch_stock_history_from_provider(symbol, start_date, end_date)
             
             if history_df is None or history_df.empty:
                 return []
@@ -146,6 +152,13 @@ class StockClient:
             logger.error(f"Error fetching stock history for {symbol}: {e}")
             return []
     
+    @log_provider_call(provider_name="vnstock", metadata_fields={"symbol": lambda r: r.get("symbol") if isinstance(r, dict) else None})
+    def _fetch_latest_quote_from_provider(self, symbol: str) -> Optional[Dict]:
+        today = datetime.now().strftime("%Y-%m-%d")
+        quote = Quote(symbol=symbol, source='VCI')
+        quote_df = quote.history(start=today, end=today)
+        return quote_df
+    
     def get_latest_quote(self, symbol: str) -> Optional[Dict]:
         """Get latest stock quote with asset-specific TTL and rate limiting."""
         # Check memory cache first (now uses 1-hour TTL for stocks)
@@ -173,9 +186,20 @@ class StockClient:
         quote_df = None
         today = datetime.now().strftime("%Y-%m-%d")
         
+        # Apply rate limiting before API call
+        if self.rate_limiter:
+            self.rate_limiter.wait_for_slot()
+        
+        # Try to fetch current quote, catch API exceptions separately
+        quote_df = None
+        today = datetime.now().strftime("%Y-%m-%d")
+        
         try:
-            quote = Quote(symbol=symbol, source='VCI')
-            quote_df = quote.history(start=today, end=today)
+            quote_df = self._fetch_latest_quote_from_provider(symbol)
+            
+            # Record API call for rate limiting
+            if self.rate_limiter:
+                self.rate_limiter.record_call('stock_latest_quote')
         except Exception as e:
             logger.warning(f"API call failed for {symbol}: {e}, will try fallback")
             quote_df = None
@@ -263,6 +287,10 @@ class StockClient:
             logger.error(f"Error processing quote data for {symbol}: {e}")
             return None
     
+    @log_provider_call(provider_name="vnstock", metadata_fields={"count": lambda r: len(r) if r is not None else 0})
+    def _fetch_companies_from_provider(self) -> Optional[pd.DataFrame]:
+        return self._listing.symbols_by_exchange()
+    
     def _get_companies_df(self):
         """Get companies DataFrame with caching and filtering."""
         # Simple in-memory cache for companies data (refresh every hour)
@@ -275,7 +303,7 @@ class StockClient:
             return self._companies_cache
         
         try:
-            companies_df = self._listing.symbols_by_exchange()
+            companies_df = self._fetch_companies_from_provider()
             
             # Filter for active stocks only: type='STOCK' and exchange != 'DELISTED'
             if companies_df is not None and not companies_df.empty:

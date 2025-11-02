@@ -5,6 +5,7 @@ from typing import List, Dict, Optional, Tuple
 import logging
 import pandas as pd
 from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
+from app.utils.provider_logger import log_provider_call
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,19 @@ class GoldClient:
         self.historical_cache = get_historical_cache()
         self.rate_limiter = get_rate_limiter()
         self.ttl_manager = get_ttl_manager()
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"rows": lambda r: len(r) if r is not None else 0})
+    def _fetch_sjc_gold_from_provider(self, date: str) -> Optional[pd.DataFrame]:
+        return sjc_gold_price(date=date)
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"rows": lambda r: len(r) if r is not None else 0})
+    def _fetch_btmc_gold_from_provider(self) -> Optional[pd.DataFrame]:
+        return btmc_goldprice()
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"rows": lambda r: len(r) if r is not None else 0})
+    def _fetch_msn_gold_from_provider(self, symbol: str, source: str) -> Optional:
+        vnstock = Vnstock()
+        return vnstock.world_index(symbol=symbol, source=source)
     
     def parse_symbol(self, symbol: str) -> Tuple[str, str]:
         """
@@ -106,7 +120,7 @@ class GoldClient:
                     if self.rate_limiter:
                         self.rate_limiter.wait_for_slot()
                     
-                    df = sjc_gold_price(date=date_str)
+                    df = self._fetch_sjc_gold_from_provider(date_str)
                     
                     # Record API call for rate limiting
                     if self.rate_limiter:
@@ -161,7 +175,7 @@ class GoldClient:
                     if self.rate_limiter:
                         self.rate_limiter.wait_for_slot()
                     
-                    df = btmc_goldprice()
+                    df = self._fetch_btmc_gold_from_provider()
                     
                     # Record API call for rate limiting
                     if self.rate_limiter:
@@ -207,8 +221,7 @@ class GoldClient:
             if self.rate_limiter:
                 self.rate_limiter.wait_for_slot()
             
-            vnstock = Vnstock()
-            gold_idx = vnstock.world_index(symbol='GOLD', source='MSN')
+            gold_idx = self._fetch_msn_gold_from_provider('GOLD', 'MSN')
             
             df = gold_idx.quote.history(start=start_date, end=end_date, interval='1D')
             

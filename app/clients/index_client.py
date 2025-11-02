@@ -4,6 +4,7 @@ from typing import List, Dict, Optional
 import logging
 import pandas as pd
 from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
+from app.utils.provider_logger import log_provider_call
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,17 @@ class IndexClient:
         self.historical_cache = get_historical_cache()
         self.rate_limiter = get_rate_limiter()
         self.ttl_manager = get_ttl_manager()
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"symbol": lambda r: r[0].get("symbol") if r else None})
+    def _fetch_index_history_from_provider(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        quote = Quote(symbol=symbol, source='VCI')
+        return quote.history(start=start_date, end=end_date)
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"symbol": lambda r: r.get("symbol") if isinstance(r, dict) else None})
+    def _fetch_latest_index_quote_from_provider(self, symbol: str) -> Optional[pd.DataFrame]:
+        quote = Quote(symbol=symbol, source='VCI')
+        today = datetime.now().strftime("%Y-%m-%d")
+        return quote.history(start=today, end=today)
     
     def get_index_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         """Fetch index history with incremental caching support."""
@@ -77,8 +89,7 @@ class IndexClient:
             if self.rate_limiter:
                 self.rate_limiter.wait_for_slot()
             
-            quote = Quote(symbol=symbol, source='VCI')
-            history_df = quote.history(start=start_date, end=end_date)
+            history_df = self._fetch_index_history_from_provider(symbol, start_date, end_date)
             
             # Record API call for rate limiting
             if self.rate_limiter:
@@ -145,9 +156,16 @@ class IndexClient:
         quote_df = None
         today = datetime.now().strftime("%Y-%m-%d")
         
+        # Apply rate limiting before API call
+        if self.rate_limiter:
+            self.rate_limiter.wait_for_slot()
+        
+        # Try to fetch current quote, catch API exceptions separately
+        quote_df = None
+        today = datetime.now().strftime("%Y-%m-%d")
+        
         try:
-            quote = Quote(symbol=symbol, source='VCI')
-            quote_df = quote.history(start=today, end=today)
+            quote_df = self._fetch_latest_index_quote_from_provider(symbol)
             
             # Record API call for rate limiting
             if self.rate_limiter:

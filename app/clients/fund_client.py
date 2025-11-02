@@ -6,6 +6,7 @@ import pandas as pd
 import time
 from requests.exceptions import Timeout, ConnectionError
 from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
+from app.utils.provider_logger import log_provider_call
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,14 @@ class FundClient:
             return False
         return datetime.now() - self._cache_timestamp < self._cache_duration
     
+    @log_provider_call(provider_name="vnstock", metadata_fields={"count": lambda r: len(r) if r is not None else 0})
+    def _fetch_funds_listing_from_provider(self) -> Optional[pd.DataFrame]:
+        return self._fund_api.listing()
+    
+    @log_provider_call(provider_name="vnstock", metadata_fields={"fund_id": lambda r: f"id_{r}" if r is not None else None})
+    def _fetch_fund_nav_report_from_provider(self, fund_id: int) -> Optional[pd.DataFrame]:
+        return self._fund_api.nav_report(fund_id)
+    
     def _refresh_funds_cache(self, max_retries: int = 3):
         """Fetch fresh fund list from vnstock with retry logic."""
         logger.info("Fetching fresh fund list from vnstock")
@@ -64,7 +73,7 @@ class FundClient:
         for attempt in range(max_retries):
             try:
                 logger.info(f"Fetching fund listing (attempt {attempt + 1}/{max_retries})...")
-                funds_df = self._fund_api.listing()
+                funds_df = self._fetch_funds_listing_from_provider()
                 
                 funds: List[Dict] = []
                 self._funds_map = {}
@@ -135,7 +144,7 @@ class FundClient:
                 logger.warning(f"Fund ID not found for symbol: {symbol}")
                 return None
             
-            fund_info = self._fund_api.nav_report(fund_id)
+            fund_info = self._fetch_fund_nav_report_from_provider(fund_id)
             if fund_info is None or fund_info.empty:
                 return None
             
@@ -231,7 +240,7 @@ class FundClient:
                     self.rate_limiter.wait_for_slot()
                 
                 logger.info(f"Fetching NAV history for {symbol} (attempt {attempt + 1}/{max_retries})...")
-                history_df = self._fund_api.nav_report(fund_id)
+                history_df = self._fetch_fund_nav_report_from_provider(fund_id)
                 
                 # Record API call for rate limiting
                 if self.rate_limiter:
@@ -325,34 +334,8 @@ class FundClient:
                     logger.warning(f"Fund ID not found for symbol: {symbol}")
                     return None
                 
-                # Rate limiting before API call
-                if self.rate_limiter:
-                    self.rate_limiter.wait_for_slot()
-                
-                # Try to fetch current NAV, catch API exceptions separately
-                nav_df = None
-                try:
-                    logger.info(f"Fetching latest NAV for {symbol} (attempt {attempt + 1}/{max_retries})...")
-                    nav_df = self._fund_api.nav_report(fund_id)
-                    
-                    # Record API call for rate limiting
-                    if self.rate_limiter:
-                        self.rate_limiter.record_call('fund_latest_nav')
-                except (Timeout, ConnectionError) as e:
-                    last_error = e
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt
-                        logger.warning(f"Latest NAV fetch timeout/connection error for {symbol}. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        logger.warning(f"Latest NAV fetch failed after {max_retries} retries for {symbol}: {e}, will try fallback")
-                        nav_df = None
-                except Exception as e:
-                    logger.warning(f"API call failed for fund {symbol}: {e}, will try fallback")
-                    nav_df = None
-                
-                # Check if we got valid data, otherwise use fallback
+                logger.info(f"Fetching latest NAV for {symbol} (attempt {attempt + 1}/{max_retries})...")
+                nav_df = self._fund_api.nav_report(fund_id)
                 if nav_df is None or nav_df.empty:
                     logger.debug(f"No current NAV data for {symbol}, checking historical fallback")
                     
