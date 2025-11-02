@@ -5,6 +5,7 @@ import logging
 import pandas as pd
 import time
 from requests.exceptions import Timeout, ConnectionError
+from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,11 @@ class FundClient:
         self._fund_api = self._initialize_fund_api()
         self.cache_manager = cache_manager
         self.memory_cache = memory_cache
+        
+        # Smart caching components
+        self.historical_cache = get_historical_cache()
+        self.rate_limiter = get_rate_limiter()
+        self.ttl_manager = get_ttl_manager()
     
     def _initialize_fund_api(self, max_retries: int = 3) -> Fund:
         """Initialize Fund API with retry logic for timeout handling."""
@@ -157,7 +163,60 @@ class FundClient:
             return None
     
     def get_fund_nav_history(self, symbol: str, start_date: str, end_date: str, max_retries: int = 2) -> List[Dict]:
-        """Fetch NAV history with retry logic for transient API errors."""
+        """Fetch NAV history with incremental caching support."""
+        # Try incremental caching first
+        if self.historical_cache:
+            try:
+                return self._get_fund_nav_history_incremental(symbol, start_date, end_date, max_retries)
+            except Exception as e:
+                logger.warning(f"Incremental caching failed for {symbol}, falling back to full fetch: {e}")
+        
+        # Fallback to full fetch
+        return self._fetch_fund_nav_history_raw(symbol, start_date, end_date, max_retries)
+    
+    def _get_fund_nav_history_incremental(self, symbol: str, start_date: str, end_date: str, max_retries: int = 2) -> List[Dict]:
+        """Fetch NAV history using incremental caching."""
+        # Check what dates are already cached
+        cached_dates = self.historical_cache.get_cached_dates(symbol, start_date, end_date, "FUND")
+        
+        # Calculate missing date ranges
+        missing_ranges = self.historical_cache.calculate_missing_date_ranges(
+            start_date=start_date,
+            end_date=end_date,
+            cached_dates=cached_dates
+        )
+        
+        # If no missing ranges, return cached data
+        if not missing_ranges:
+            logger.info(f"All historical data for {symbol} found in cache")
+            cached_data = self.historical_cache.get_cached_records(symbol, start_date, end_date, "FUND")
+            return self._format_nav_records(cached_data)
+        
+        # Fetch missing ranges
+        logger.info(f"Fetching {len(missing_ranges)} missing date ranges for {symbol}")
+        all_new_records = []
+        
+        for missing_start, missing_end in missing_ranges:
+            records = self._fetch_fund_nav_history_raw(symbol, missing_start, missing_end, max_retries)
+            if records:
+                all_new_records.extend(records)
+        
+        # Store new records in cache first (real data takes priority)
+        if all_new_records:
+            self.historical_cache.store_historical_records(symbol, "FUND", all_new_records)
+        
+        # Mark all fetched ranges as attempted (creates null records for no-data dates)
+        for missing_start, missing_end in missing_ranges:
+            self.historical_cache.mark_date_range_as_fetched(symbol, "FUND", missing_start, missing_end)
+        
+        # Merge with existing cached data and return
+        cached_data = self.historical_cache.get_cached_records(symbol, start_date, end_date, "FUND")
+        all_data = self.historical_cache.merge_historical_data(cached_data, all_new_records)
+        
+        return self._format_nav_records(all_data)
+    
+    def _fetch_fund_nav_history_raw(self, symbol: str, start_date: str, end_date: str, max_retries: int = 2) -> List[Dict]:
+        """Fetch NAV history from API with retry logic."""
         last_error = None
         
         for attempt in range(max_retries):
@@ -167,8 +226,16 @@ class FundClient:
                     logger.warning(f"Fund ID not found for symbol: {symbol}")
                     return []
                 
+                # Rate limiting
+                if self.rate_limiter:
+                    self.rate_limiter.wait_for_slot()
+                
                 logger.info(f"Fetching NAV history for {symbol} (attempt {attempt + 1}/{max_retries})...")
                 history_df = self._fund_api.nav_report(fund_id)
+                
+                # Record API call for rate limiting
+                if self.rate_limiter:
+                    self.rate_limiter.record_call('fund_nav_history')
                 
                 if history_df is None or history_df.empty:
                     return []
@@ -183,6 +250,7 @@ class FundClient:
                     date_val = row.get("date")
                     date_str = date_val.strftime("%Y-%m-%d") if isinstance(date_val, pd.Timestamp) else str(date_val)
                     history.append({
+                        "symbol": symbol,
                         "date": date_str,
                         "nav": nav,
                         "open": nav,
@@ -212,9 +280,27 @@ class FundClient:
         
         return []
     
+    def _format_nav_records(self, records: List[Dict]) -> List[Dict]:
+        """Format historical records for NAV data."""
+        formatted = []
+        for record in records:
+            # Extract NAV value - it could be in 'close' or 'nav' field
+            nav = record.get("nav") or record.get("close", 0.0)
+            formatted.append({
+                "date": record.get("date"),
+                "nav": nav,
+                "open": nav,
+                "high": nav,
+                "low": nav,
+                "close": nav,
+                "adjclose": nav,
+                "volume": 0.0
+            })
+        return formatted
+    
     def get_latest_nav(self, symbol: str, max_retries: int = 2) -> Optional[Dict]:
-        """Get latest NAV with retry logic."""
-        # Check memory cache first
+        """Get latest NAV with retry logic and smart caching."""
+        # Check memory cache first (will use 24-hour TTL automatically)
         if self.memory_cache:
             cached_quote = self.memory_cache.get_quote(symbol, "FUND")
             if cached_quote:
@@ -226,7 +312,7 @@ class FundClient:
             cached_quote = self.cache_manager.get_quote(symbol, "FUND")
             if cached_quote:
                 logger.debug(f"Using persistent cached NAV for {symbol}")
-                # Also store in memory cache for faster access
+                # Also store in memory cache for faster access (will use 24-hour TTL)
                 if self.memory_cache:
                     self.memory_cache.set_quote(symbol, "FUND", cached_quote)
                 return cached_quote
@@ -239,11 +325,73 @@ class FundClient:
                     logger.warning(f"Fund ID not found for symbol: {symbol}")
                     return None
                 
-                logger.info(f"Fetching latest NAV for {symbol} (attempt {attempt + 1}/{max_retries})...")
-                nav_df = self._fund_api.nav_report(fund_id)
+                # Rate limiting before API call
+                if self.rate_limiter:
+                    self.rate_limiter.wait_for_slot()
+                
+                # Try to fetch current NAV, catch API exceptions separately
+                nav_df = None
+                try:
+                    logger.info(f"Fetching latest NAV for {symbol} (attempt {attempt + 1}/{max_retries})...")
+                    nav_df = self._fund_api.nav_report(fund_id)
+                    
+                    # Record API call for rate limiting
+                    if self.rate_limiter:
+                        self.rate_limiter.record_call('fund_latest_nav')
+                except (Timeout, ConnectionError) as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        logger.warning(f"Latest NAV fetch timeout/connection error for {symbol}. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.warning(f"Latest NAV fetch failed after {max_retries} retries for {symbol}: {e}, will try fallback")
+                        nav_df = None
+                except Exception as e:
+                    logger.warning(f"API call failed for fund {symbol}: {e}, will try fallback")
+                    nav_df = None
+                
+                # Check if we got valid data, otherwise use fallback
                 if nav_df is None or nav_df.empty:
+                    logger.debug(f"No current NAV data for {symbol}, checking historical fallback")
+                    
+                    # Fallback 1: Check historical cache for most recent record
+                    if self.historical_cache:
+                        recent_record = self.historical_cache.get_most_recent_record(symbol, 'FUND', lookback_days=30)
+                        if recent_record:
+                            logger.info(f"Using historical fallback for fund {symbol} from {recent_record.get('date')}")
+                            # Cache this fallback quote
+                            if self.memory_cache:
+                                self.memory_cache.set_quote(symbol, "FUND", recent_record)
+                            if self.cache_manager and self.ttl_manager:
+                                ttl = self.ttl_manager.get_ttl_for_asset("FUND")
+                                self.cache_manager.set_quote(symbol, "FUND", recent_record, ttl_seconds=ttl)
+                            return recent_record
+                        
+                        # Fallback 2: Fetch last week's data to populate cache
+                        logger.info(f"No historical cache for fund {symbol}, fetching last week's data")
+                        one_week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+                        today_str = datetime.now().strftime("%Y-%m-%d")
+                        history = self.get_fund_history(symbol, one_week_ago, today_str)
+                        
+                        if history:
+                            most_recent = history[-1]
+                            logger.info(f"Using last week's most recent data for fund {symbol} from {most_recent.get('date')}")
+                            # Ensure symbol is present in the fallback record
+                            if "symbol" not in most_recent:
+                                most_recent["symbol"] = symbol
+                            # Cache this fallback quote
+                            if self.memory_cache:
+                                self.memory_cache.set_quote(symbol, "FUND", most_recent)
+                            if self.cache_manager and self.ttl_manager:
+                                ttl = self.ttl_manager.get_ttl_for_asset("FUND")
+                                self.cache_manager.set_quote(symbol, "FUND", most_recent, ttl_seconds=ttl)
+                            return most_recent
+                    
                     return None
                 
+                # Process successful API response
                 info = nav_df.iloc[-1]
                 date_val = info.get("date")
                 if isinstance(date_val, pd.Timestamp):
@@ -267,24 +415,19 @@ class FundClient:
                     "date": date_str
                 }
                 
-                # Cache the quote
+                # Cache the quote (memory cache will auto-use 24-hour TTL for FUND)
                 if self.memory_cache:
                     self.memory_cache.set_quote(symbol, "FUND", quote_data)
-                if self.cache_manager:
-                    self.cache_manager.set_quote(symbol, "FUND", quote_data)
+                
+                # Cache in persistent storage with TTL from TTL manager
+                if self.cache_manager and self.ttl_manager:
+                    ttl = self.ttl_manager.get_ttl_for_asset("FUND")
+                    self.cache_manager.set_quote(symbol, "FUND", quote_data, ttl_seconds=ttl)
                 
                 return quote_data
                 
-            except (Timeout, ConnectionError) as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    logger.warning(f"Latest NAV fetch timeout/connection error for {symbol}. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})")
-                    time.sleep(wait_time)
-                else:
-                    logger.error(f"Latest NAV fetch failed after {max_retries} retries for {symbol}: {e}")
             except Exception as e:
-                logger.error(f"Error fetching latest NAV for {symbol}: {e}")
+                logger.error(f"Error processing fund NAV for {symbol}: {e}")
                 return None
         
         if last_error:

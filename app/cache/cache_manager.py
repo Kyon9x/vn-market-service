@@ -19,7 +19,14 @@ class CacheManager:
         self._init_database()
     
     def _init_database(self):
-        """Initialize cache database with required tables."""
+        """Initialize cache database with required tables and run migrations."""
+        # Run migrations first to create historical_records table
+        try:
+            from .migrations import migrate_database
+            migrate_database(str(self.db_path))
+        except Exception as e:
+            logger.warning(f"Could not run migrations: {e}")
+        
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             try:

@@ -6,6 +6,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Import TTL manager for asset-specific TTL configuration
+try:
+    from .quote_ttl_manager import get_ttl_manager
+    _has_ttl_manager = True
+except ImportError:
+    logger.warning("QuoteTTLManager not available, using default TTL")
+    _has_ttl_manager = False
+
 class MemoryCache:
     """High-performance in-memory cache with TTL support for frequently accessed data."""
     
@@ -144,10 +152,12 @@ class MemoryCache:
         return result
 
 class QuoteCache(MemoryCache):
-    """Specialized cache for quote data with shorter TTL."""
+    """Specialized cache for quote data with asset-specific TTL."""
     
     def __init__(self, default_ttl: int = 300, max_size: int = 500):
         super().__init__(default_ttl=default_ttl, max_size=max_size)
+        # Initialize TTL manager if available
+        self._ttl_manager = get_ttl_manager() if _has_ttl_manager else None
     
     def get_quote(self, symbol: str, asset_type: str) -> Optional[Dict]:
         """Get quote for specific symbol and asset type."""
@@ -155,8 +165,22 @@ class QuoteCache(MemoryCache):
         return self.get(key)
     
     def set_quote(self, symbol: str, asset_type: str, quote_data: Dict, ttl: Optional[int] = None) -> None:
-        """Set quote for specific symbol and asset type."""
+        """
+        Set quote for specific symbol and asset type with asset-specific TTL.
+        
+        Args:
+            symbol: Asset symbol
+            asset_type: Asset type (FUND, STOCK, INDEX, GOLD, etc.)
+            quote_data: Quote data dictionary
+            ttl: Optional custom TTL (overrides asset-specific TTL)
+        """
         key = f"quote:{symbol}:{asset_type}"
+        
+        # Use asset-specific TTL if no custom TTL provided
+        if ttl is None and self._ttl_manager:
+            ttl = self._ttl_manager.get_ttl_for_asset(asset_type)
+            logger.debug(f"Using asset-specific TTL for {symbol} ({asset_type}): {ttl}s")
+        
         self.set(key, quote_data, ttl)
     
     def invalidate_symbol(self, symbol: str) -> None:

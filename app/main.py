@@ -919,15 +919,16 @@ async def get_quote(symbol: str):
             }
         
         # Try funds
-        fund_symbols = [f["symbol"] for f in fund_client.get_funds_list()]
-        if symbol in fund_symbols:
-            result = await get_fund_quote(symbol)
-            return {
-                **result.dict(),
-                "asset_type": "FUND",
-                "asset_class": "Investment Fund",
-                "asset_sub_class": "Mutual Fund"
-            }
+        if fund_client:
+            fund_symbols = [f["symbol"] for f in fund_client.get_funds_list()]
+            if symbol in fund_symbols:
+                result = await get_fund_quote(symbol)
+                return {
+                    **result.dict(),
+                    "asset_type": "FUND",
+                    "asset_class": "Investment Fund",
+                    "asset_sub_class": "Mutual Fund"
+                }
         
         # Try stocks (default)
         result = await get_stock_quote(symbol)

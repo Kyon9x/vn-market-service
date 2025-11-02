@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import logging
 import pandas as pd
+from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ class GoldClient:
     def __init__(self, cache_manager=None, memory_cache=None):
         self.cache_manager = cache_manager
         self.memory_cache = memory_cache
+        
+        # Smart caching components
+        self.historical_cache = get_historical_cache()
+        self.rate_limiter = get_rate_limiter()
+        self.ttl_manager = get_ttl_manager()
     
     def parse_symbol(self, symbol: str) -> Tuple[str, str]:
         """
@@ -84,7 +90,7 @@ class GoldClient:
             return []
     
     def _get_sjc_history(self, start_date: str, end_date: str) -> List[Dict]:
-        """Fetch SJC gold historical prices."""
+        """Fetch SJC gold historical prices with rate limiting."""
         try:
             start_dt = datetime.strptime(start_date, "%Y-%m-%d")
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -96,7 +102,15 @@ class GoldClient:
                 date_str = current_dt.strftime("%Y-%m-%d")
                 
                 try:
+                    # Rate limiting before each API call
+                    if self.rate_limiter:
+                        self.rate_limiter.wait_for_slot()
+                    
                     df = sjc_gold_price(date=date_str)
+                    
+                    # Record API call for rate limiting
+                    if self.rate_limiter:
+                        self.rate_limiter.record_call('sjc_gold_history')
                     
                     if df is not None and not df.empty:
                         info = df.iloc[0]
@@ -131,7 +145,7 @@ class GoldClient:
             return []
     
     def _get_btmc_history(self, start_date: str, end_date: str) -> List[Dict]:
-        """Fetch BTMC gold historical prices (limited - mostly current prices)."""
+        """Fetch BTMC gold historical prices with rate limiting."""
         try:
             start_dt = datetime.strptime(start_date, "%Y-%m-%d")
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -143,7 +157,15 @@ class GoldClient:
                 date_str = current_dt.strftime("%Y-%m-%d")
                 
                 try:
+                    # Rate limiting before each API call
+                    if self.rate_limiter:
+                        self.rate_limiter.wait_for_slot()
+                    
                     df = btmc_goldprice()
+                    
+                    # Record API call for rate limiting
+                    if self.rate_limiter:
+                        self.rate_limiter.record_call('btmc_gold_history')
                     
                     if df is not None and not df.empty:
                         info = df.iloc[0]
@@ -153,6 +175,7 @@ class GoldClient:
                         
                         if price > 0:
                             history.append({
+                                "symbol": "VN.GOLD.BTMC",  # BTMC symbol
                                 "date": date_str,
                                 "nav": price,
                                 "open": price,
@@ -178,12 +201,20 @@ class GoldClient:
             return []
     
     def _get_msn_history(self, start_date: str, end_date: str) -> List[Dict]:
-        """Fetch MSN/world gold commodity historical prices."""
+        """Fetch MSN/world gold commodity historical prices with rate limiting."""
         try:
+            # Rate limiting before API call
+            if self.rate_limiter:
+                self.rate_limiter.wait_for_slot()
+            
             vnstock = Vnstock()
             gold_idx = vnstock.world_index(symbol='GOLD', source='MSN')
             
             df = gold_idx.quote.history(start=start_date, end=end_date, interval='1D')
+            
+            # Record API call for rate limiting
+            if self.rate_limiter:
+                self.rate_limiter.record_call('msn_gold_history')
             
             if df is None or df.empty:
                 logger.warning("MSN API returned empty data")
@@ -194,6 +225,7 @@ class GoldClient:
                 date_str = pd.to_datetime(row['time']).strftime('%Y-%m-%d') if 'time' in row else pd.to_datetime(row.name).strftime('%Y-%m-%d')
                 
                 history.append({
+                    "symbol": "GOLD.MSN",  # MSN symbol
                     "date": date_str,
                     "nav": float(row.get('close', 0.0)),
                     "open": float(row.get('open', 0.0)),
@@ -211,8 +243,8 @@ class GoldClient:
 
     
     def get_latest_quote(self, symbol: str) -> Optional[Dict]:
-        """Fetch the latest gold price for a given provider."""
-        # Check memory cache first
+        """Fetch the latest gold price with smart caching and rate limiting."""
+        # Check memory cache first (will use 1-hour TTL automatically)
         if self.memory_cache:
             cached_quote = self.memory_cache.get_quote(symbol, "GOLD")
             if cached_quote:
@@ -224,15 +256,24 @@ class GoldClient:
             cached_quote = self.cache_manager.get_quote(symbol, "GOLD")
             if cached_quote:
                 logger.debug(f"Using persistent cached gold quote for {symbol}")
-                # Also store in memory cache for faster access
+                # Also store in memory cache for faster access (will use 1-hour TTL)
                 if self.memory_cache:
                     self.memory_cache.set_quote(symbol, "GOLD", cached_quote)
                 return cached_quote
         
         try:
             _, provider = self.parse_symbol(symbol)
-            
-            quote_data = None
+        except ValueError as e:
+            logger.debug(f"Invalid symbol: {e}")
+            return None
+        
+        # Rate limiting before API call
+        if self.rate_limiter:
+            self.rate_limiter.wait_for_slot()
+        
+        # Try to fetch current quote, catch API exceptions separately
+        quote_data = None
+        try:
             if provider == "sjc":
                 quote_data = self._get_sjc_quote(symbol)
             elif provider == "btmc":
@@ -240,20 +281,49 @@ class GoldClient:
             elif provider == "msn":
                 quote_data = self._get_msn_quote(symbol)
             
-            # Cache the quote
-            if quote_data:
-                if self.memory_cache:
-                    self.memory_cache.set_quote(symbol, "GOLD", quote_data)
-                if self.cache_manager:
-                    self.cache_manager.set_quote(symbol, "GOLD", quote_data)
-            
-            return quote_data
-        except ValueError as e:
-            logger.debug(f"Invalid symbol: {e}")
-            return None
+            # Record API call for rate limiting
+            if self.rate_limiter and quote_data:
+                self.rate_limiter.record_call(f'gold_{provider}_quote')
         except Exception as e:
-            logger.error(f"Error fetching gold quote for {symbol}: {e}")
-            return None
+            logger.warning(f"API call failed for gold {symbol}: {e}, will try fallback")
+            quote_data = None
+        
+        # If no quote data from API, try fallback
+        if not quote_data:
+            logger.debug(f"No current data for gold {symbol}, checking historical fallback")
+            
+            # Fallback 1: Check historical cache for most recent record
+            if self.historical_cache:
+                recent_record = self.historical_cache.get_most_recent_record(symbol, 'GOLD', lookback_days=30)
+                if recent_record:
+                    logger.info(f"Using historical fallback for gold {symbol} from {recent_record.get('date')}")
+                    quote_data = recent_record
+                else:
+                    # Fallback 2: Fetch last week's data to populate cache
+                    logger.info(f"No historical cache for gold {symbol}, fetching last week's data")
+                    one_week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    history = self.get_gold_history(symbol, one_week_ago, today_str)
+                    
+                    if history:
+                        most_recent = history[-1]
+                        logger.info(f"Using last week's most recent data for gold {symbol} from {most_recent.get('date')}")
+                        # Ensure symbol is present in the fallback record
+                        if "symbol" not in most_recent:
+                            most_recent["symbol"] = symbol
+                        quote_data = most_recent
+        
+        # Cache the quote (memory cache will auto-use 1-hour TTL for GOLD)
+        if quote_data:
+            if self.memory_cache:
+                self.memory_cache.set_quote(symbol, "GOLD", quote_data)
+            
+            # Cache in persistent storage with TTL from TTL manager
+            if self.cache_manager and self.ttl_manager:
+                ttl = self.ttl_manager.get_ttl_for_asset("GOLD")
+                self.cache_manager.set_quote(symbol, "GOLD", quote_data, ttl_seconds=ttl)
+        
+        return quote_data
     
     def _get_sjc_quote(self, symbol: str) -> Optional[Dict]:
         """Fetch latest SJC gold price."""
