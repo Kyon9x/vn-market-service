@@ -41,6 +41,10 @@ class FundClient:
         
         # Lazy fetch manager for background data enrichment
         self.lazy_fetch_manager = LazyFetchManager(db_path="db/assets.db", fund_client=self) if LazyFetchManager else None
+        
+        # Fund inception date cache for smart date range adjustment
+        self._inception_dates: Dict[str, str] = {}  # symbol -> inception_date
+        self._inception_cache_ttl = timedelta(days=7)  # Cache inception dates for 7 days
     
     def _initialize_fund_api(self, max_retries: int = 3) -> Fund:
         """Initialize Fund API with retry logic for timeout handling."""
@@ -86,6 +90,73 @@ class FundClient:
         if self._cache_timestamp is None:
             return False
         return datetime.now() - self._cache_timestamp < self._cache_duration
+    
+    def _get_fund_inception_date(self, symbol: str) -> Optional[str]:
+        """
+        Get fund inception date (earliest available NAV date).
+        
+        Uses cached inception dates to avoid repeated API calls.
+        Returns None if inception date cannot be determined.
+        """
+        # Check cache first
+        if symbol.upper() in self._inception_dates:
+            logger.debug(f"Using cached inception date for {symbol}: {self._inception_dates[symbol.upper()]}")
+            return self._inception_dates[symbol.upper()]
+        
+        try:
+            # Get fund ID first
+            fund_id = self._get_fund_id(symbol)
+            if not fund_id:
+                logger.warning(f"Fund ID not found for inception date lookup: {symbol}")
+                return None
+            
+            # Use vnstock nav_report to get full history
+            if self._ensure_fund_api_initialized() and self._fund_api is not None:
+                fund_api = self._fund_api  # Local variable for type checker
+                nav_df = fund_api.nav_report(fund_id)
+                
+                if nav_df is not None and not nav_df.empty:
+                    # Find earliest date in the data
+                    nav_df['date'] = pd.to_datetime(nav_df['date'])
+                    earliest_record = nav_df.loc[nav_df['date'].idxmin()]
+                    inception_date = earliest_record['date'].strftime("%Y-%m-%d")
+                    
+                    # Cache the inception date
+                    self._inception_dates[symbol.upper()] = inception_date
+                    logger.info(f"Discovered inception date for {symbol}: {inception_date}")
+                    return inception_date
+                else:
+                    logger.warning(f"No NAV data available for inception date lookup: {symbol}")
+                    return None
+            else:
+                logger.warning(f"Fund API not initialized for inception date lookup: {symbol}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting inception date for {symbol}: {e}")
+            return None
+    
+    def _adjust_date_range_for_inception(self, symbol: str, start_date: str, end_date: str) -> tuple[str, str]:
+        """
+        Adjust date range based on fund's inception date.
+        
+        Returns tuple of (adjusted_start_date, adjusted_end_date).
+        If adjustment was made, logs the change.
+        """
+        inception_date = self._get_fund_inception_date(symbol)
+        
+        if inception_date is None:
+            # Could not determine inception date, use original range
+            return start_date, end_date
+        
+        # Use the later of requested start date or inception date
+        if start_date < inception_date:
+            adjusted_start = inception_date
+            logger.info(f"Adjusted start date for {symbol}: {start_date} → {adjusted_start} (fund inception)")
+            return adjusted_start, end_date
+        else:
+            # No adjustment needed
+            return start_date, end_date
     
     @log_provider_call(provider_name="vnstock", metadata_fields={"count": lambda r: len(r) if r is not None else 0})
     def _fetch_funds_listing_from_provider(self) -> Optional[pd.DataFrame]:
@@ -265,24 +336,27 @@ class FundClient:
     
     def get_fund_nav_history(self, symbol: str, start_date: str, end_date: str, 
                             max_retries: int = 2, use_lazy_fetch: bool = True) -> List[Dict]:
-        """Fetch NAV history with lazy fetch support by default."""
+        """Fetch NAV history with smart date range adjustment and lazy fetch support by default."""
         
-        # Use lazy fetch by default (non-blocking, immediate response)
+        # Step 1: Adjust date range based on fund inception date
+        adjusted_start, adjusted_end = self._adjust_date_range_for_inception(symbol, start_date, end_date)
+        
+        # Step 2: Use lazy fetch by default (non-blocking, immediate response)
         if use_lazy_fetch and self.historical_cache:
             try:
-                return self._get_fund_history_lazy_fetch(symbol, start_date, end_date)
+                return self._get_fund_history_lazy_fetch(symbol, adjusted_start, adjusted_end)
             except Exception as e:
                 logger.warning(f"Lazy fetch failed for {symbol}, falling back to incremental: {e}")
         
-        # Fallback to incremental caching (current behavior)
+        # Step 3: Fallback to incremental caching (current behavior)
         if self.historical_cache:
             try:
-                return self._get_fund_nav_history_incremental(symbol, start_date, end_date, max_retries)
+                return self._get_fund_nav_history_incremental(symbol, adjusted_start, adjusted_end, max_retries)
             except Exception as e:
                 logger.warning(f"Incremental caching failed for {symbol}, falling back to full fetch: {e}")
         
-        # Last resort: full fetch
-        return self._fetch_fund_nav_history_raw(symbol, start_date, end_date, max_retries)
+        # Step 4: Last resort: full fetch with adjusted dates
+        return self._fetch_fund_nav_history_raw(symbol, adjusted_start, adjusted_end, max_retries)
     
     def _get_fund_history_lazy_fetch(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         """

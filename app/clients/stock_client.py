@@ -1,19 +1,33 @@
 from vnstock import Quote, Listing
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import logging
 import pandas as pd
+import sys
+import os
 from app.utils.provider_logger import log_provider_call
 
-logger = logging.getLogger(__name__)
+# Add current directory to Python path for imports
+current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+# Import shared utilities
+try:
+    from app.utils.market_time_utils import is_weekday, should_update_data
+    from app.utils.data_freshness import check_and_update_latest_data
+    _has_shared_utils = True
+except ImportError as e:
+    _has_shared_utils = False
 
 # Import smart caching utilities
 try:
     from app.cache import get_stock_historical_cache, get_rate_limiter, get_ttl_manager
     _has_smart_cache = True
 except ImportError:
-    logger.warning("Smart caching modules not available")
     _has_smart_cache = False
+
+logger = logging.getLogger(__name__)
 
 class StockClient:
     def __init__(self, cache_manager=None, memory_cache=None):
@@ -46,19 +60,101 @@ class StockClient:
         quote = Quote(symbol=symbol, source='VCI')
         history_df = quote.history(start=start_date, end=end_date)
         return history_df
-    
-    def get_stock_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
-        """Get stock history with incremental caching support."""
+
+    def _check_and_update_latest_price_fallback(self, symbol: str, cached_data: List[Dict]):
+        """Fallback method for latest price check when shared utils not available."""
+        if not cached_data:
+            return
         
-        # Use incremental caching if available
+        now = datetime.now()
+        latest_record = cached_data[-1]  # Most recent
+        
+        # Simple weekday/weekend logic without shared utils
+        if now.weekday() < 5:  # Monday=0, Friday=4
+            # Weekday: Update if older than 30 minutes
+            try:
+                last_update = datetime.strptime(latest_record['date'], "%Y-%m-%d")
+                if len(latest_record['date']) == 10:  # YYYY-MM-DD format
+                    last_update = last_update.replace(hour=23, minute=59, second=59)
+                
+                if (now - last_update).total_seconds() > (30 * 60):
+                    self._fetch_and_store_latest_price_fallback(symbol, now)
+            except ValueError:
+                self._fetch_and_store_latest_price_fallback(symbol, now)
+        else:
+            # Weekend: Ensure Friday data
+            try:
+                last_date = datetime.strptime(latest_record['date'], "%Y-%m-%d")
+                if last_date.weekday() != 4:  # Not Friday
+                    self._fetch_and_store_friday_price_fallback(symbol, now)
+            except ValueError:
+                self._fetch_and_store_friday_price_fallback(symbol, now)
+    
+    def _fetch_and_store_latest_price_fallback(self, symbol: str, dt: datetime):
+        """Fallback method to fetch and store latest price."""
+        try:
+            today_str = dt.strftime("%Y-%m-%d")
+            fresh_data = self._fetch_stock_history_raw(symbol, today_str, today_str)
+            
+            if fresh_data and self.historical_cache:
+                self.historical_cache.store_historical_records(symbol, 'STOCK', fresh_data)
+                logger.info(f"Updated latest stock data for {symbol}")
+        except Exception as e:
+            logger.error(f"Error updating latest stock data for {symbol}: {e}")
+    
+    def _fetch_and_store_friday_price_fallback(self, symbol: str, dt: datetime):
+        """Fallback method to fetch and store Friday price."""
+        try:
+            # Get most recent Friday
+            days_since_friday = (dt.weekday() - 4) % 7  # Friday=4
+            friday = dt - timedelta(days=days_since_friday)
+            friday_str = friday.strftime("%Y-%m-%d")
+            
+            fresh_data = self._fetch_stock_history_raw(symbol, friday_str, friday_str)
+            
+            if fresh_data and self.historical_cache:
+                self.historical_cache.store_historical_records(symbol, 'STOCK', fresh_data)
+                logger.info(f"Updated Friday stock data for {symbol}")
+        except Exception as e:
+            logger.error(f"Error updating Friday stock data for {symbol}: {e}")
+
+    def get_stock_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
+        """Get stock history with simple cache → vnstock → store flow."""
+        
+        # 1. Check cache first
         if self.historical_cache:
             try:
-                return self._get_stock_history_incremental(symbol, start_date, end_date)
+                cached_data = self.historical_cache.get_cached_records(symbol, start_date, end_date, 'STOCK')
+                
+                if cached_data:
+                    # 2. Check latest price update using shared utility
+                    if _has_shared_utils:
+                        check_and_update_latest_data(
+                            symbol=symbol,
+                            asset_type='STOCK',
+                            cached_data=cached_data,
+                            client_instance=self,
+                            update_threshold_minutes=30
+                        )
+                    else:
+                        # Fallback: Simple latest price check without shared utils
+                        self._check_and_update_latest_price_fallback(symbol, cached_data)
+                    
+                    return cached_data
             except Exception as e:
-                logger.warning(f"Incremental caching failed, falling back to standard method: {e}")
+                logger.warning(f"Cache check failed, falling back to direct fetch: {e}")
         
-        # Fallback to standard method
-        return self._fetch_stock_history_raw(symbol, start_date, end_date)
+        # 3. No cache - fetch from vnstock and store
+        fresh_data = self._fetch_stock_history_raw(symbol, start_date, end_date)
+        
+        if fresh_data and self.historical_cache:
+            try:
+                self.historical_cache.store_historical_records(symbol, 'STOCK', fresh_data)
+                logger.info(f"Fetched and stored {len(fresh_data)} stock records for {symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to store fresh data in cache: {e}")
+        
+        return fresh_data
     
     def _get_stock_history_incremental(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         """Get stock history using incremental caching."""
