@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 # Import smart caching utilities
 try:
-    from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
+    from app.cache import get_stock_historical_cache, get_rate_limiter, get_ttl_manager
     _has_smart_cache = True
 except ImportError:
     logger.warning("Smart caching modules not available")
@@ -26,7 +26,7 @@ class StockClient:
         
         # Initialize smart caching components
         if _has_smart_cache:
-            self.historical_cache = get_historical_cache()
+            self.historical_cache = get_stock_historical_cache()
             self.rate_limiter = get_rate_limiter()
             self.ttl_manager = get_ttl_manager()
         else:

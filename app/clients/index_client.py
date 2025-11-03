@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
 import pandas as pd
-from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
+from app.cache import get_index_historical_cache, get_rate_limiter, get_ttl_manager
 from app.utils.provider_logger import log_provider_call
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ class IndexClient:
         self.memory_cache = memory_cache
         
         # Smart caching components
-        self.historical_cache = get_historical_cache()
+        self.historical_cache = get_index_historical_cache()
         self.rate_limiter = get_rate_limiter()
         self.ttl_manager = get_ttl_manager()
     

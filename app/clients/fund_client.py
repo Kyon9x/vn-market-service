@@ -7,7 +7,7 @@ import time
 from requests.exceptions import Timeout, ConnectionError
 from vnstock.core.utils import client
 from vnstock.core.utils.user_agent import get_headers
-from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
+from app.cache import get_fund_historical_cache, get_rate_limiter, get_ttl_manager
 from app.utils.provider_logger import log_provider_call
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class FundClient:
         self.headers = get_headers(data_source="fmarket", random_agent=False)
 
         # Smart caching components
-        self.historical_cache = get_historical_cache()
+        self.historical_cache = get_fund_historical_cache()
         self.rate_limiter = get_rate_limiter()
         self.ttl_manager = get_ttl_manager()
     

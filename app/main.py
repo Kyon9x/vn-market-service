@@ -202,6 +202,24 @@ async def get_cache_statistics():
         logger.error(f"Error getting cache stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/cache/lazy-fetch/status")
+async def get_lazy_fetch_status(symbol: str = None):
+    """Get lazy fetch status for monitoring background data enrichment."""
+    try:
+        if not gold_client or not gold_client.lazy_fetch_manager:
+            return {"message": "Lazy fetch not available", "status": "disabled"}
+        
+        status = gold_client.lazy_fetch_manager.get_fetch_status(symbol)
+        
+        return {
+            "lazy_fetch_enabled": True,
+            "status": status,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting lazy fetch status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/cache/cleanup")
 async def cleanup_cache():
     """Manually trigger cache cleanup."""

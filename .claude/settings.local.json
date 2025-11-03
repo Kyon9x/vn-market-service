@@ -3,7 +3,12 @@
     "allow": [
       "Bash(./.venv/bin/python:*)",
       "Bash(timeout:*)",
-      "Bash(gtimeout:*)"
+      "Bash(gtimeout:*)",
+      "Bash(sqlite3:*)",
+      "Bash(pkill:*)",
+      "Bash(xargs kill:*)",
+      "Bash(lsof -i :8765)",
+      "Bash(docker-compose ps)"
     ],
     "deny": [],
     "ask": []

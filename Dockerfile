@@ -1,9 +1,13 @@
 FROM python:3.14-slim
 
+# Set timezone to GMT+7 (Asia/Ho_Chi_Minh)
+ENV TZ=Asia/Ho_Chi_Minh
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 WORKDIR /app
 
 COPY requirements.txt .
-RUN apt-get update && apt-get install -y build-essential \
+RUN apt-get update && apt-get install -y build-essential curl \
     && pip install --no-cache-dir -r requirements.txt \
     && apt-get remove -y build-essential && apt-get clean autoclean && rm -rf /var/lib/apt/lists/*
 
@@ -16,6 +20,7 @@ RUN mkdir -p /app/db /app/logs
 # Set environment variables
 ENV VN_MARKET_SERVICE_HOST=0.0.0.0
 ENV VN_MARKET_SERVICE_PORT=8765
+ENV TZ=Asia/Ho_Chi_Minh
 
 # Expose port
 EXPOSE 8765

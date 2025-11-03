@@ -5,8 +5,16 @@ import logging
 import pandas as pd
 import sqlite3
 from pathlib import Path
-from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
+from app.cache import get_gold_historical_cache, get_rate_limiter, get_ttl_manager
 from app.utils.provider_logger import log_provider_call
+
+# Import LazyFetchManager separately to avoid circular import issues
+try:
+    from app.cache.lazy_fetch_manager import LazyFetchManager
+    LAZY_FETCH_AVAILABLE = True
+except ImportError:
+    LazyFetchManager = None
+    LAZY_FETCH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +23,7 @@ class GoldClient:
     PROVIDERS = {
         "sjc": {
             "name": "Saigon Jewelry Company",
-            "symbols": ["VN.GOLD", "SJC.GOLD"],
+            "symbols": ["VN.GOLD", "VN.GOLD.C"],
             "api_func": "sjc_gold_price"
         }
     }
@@ -26,9 +34,12 @@ class GoldClient:
         self.db_path = Path(db_path)
         
         # Smart caching components
-        self.historical_cache = get_historical_cache()
+        self.historical_cache = get_gold_historical_cache()
         self.rate_limiter = get_rate_limiter()
         self.ttl_manager = get_ttl_manager()
+        
+        # Lazy fetch manager for background data enrichment
+        self.lazy_fetch_manager = LazyFetchManager(db_path=db_path, gold_client=self) if LazyFetchManager else None
     
     @log_provider_call(provider_name="vnstock", metadata_fields={"rows": lambda r: len(r) if r is not None else 0})
     def _fetch_sjc_gold_from_provider(self, date: str):
@@ -47,13 +58,16 @@ class GoldClient:
     def parse_symbol(self, symbol: str) -> Tuple[str, str]:
         """
         Parse gold symbol and return (normalized_symbol, provider).
+        Supports VN.GOLD (Lượng) and VN.GOLD.C (Chỉ) symbols.
         Raises ValueError if symbol is not a valid gold provider symbol.
         """
         symbol_upper = symbol.upper()
         
         for provider, config in self.PROVIDERS.items():
             if symbol_upper in [s.upper() for s in config["symbols"]]:
-                return symbol_upper, provider
+                # Normalize to base symbol for data fetching (always use VN.GOLD for storage)
+                normalized_symbol = "VN.GOLD" if symbol_upper.endswith('.C') else symbol_upper
+                return normalized_symbol, provider
         
         raise ValueError(f"Invalid gold symbol: {symbol}. Valid symbols: {self._get_all_valid_symbols()}")
     
@@ -204,42 +218,17 @@ class GoldClient:
             return False
     
     def get_gold_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
-        """Fetch historical gold prices using database-first approach."""
+        """Fetch historical gold prices using lazy fetch approach - return cached data immediately."""
         try:
-            _, provider = self.parse_symbol(symbol)
+            normalized_symbol, provider = self.parse_symbol(symbol)
             
             # Only SJC provider supported
             if provider != "sjc":
                 logger.error(f"Unsupported provider: {provider}. Only SJC is supported.")
                 return []
             
-            # DATABASE-FIRST: Check database first
-            if self._database_has_data(start_date, end_date):
-                logger.info(f"Using database-first approach for {symbol} ({start_date} to {end_date})")
-                history = self._get_historical_from_database(start_date, end_date, symbol)
-                
-                # Cache the results for faster future access
-                if history and self.cache_manager:
-                    self.cache_manager.set_historical_data(symbol, start_date, end_date, "GOLD", history)
-                
-                return history
-            
-            # FALLBACK: Check cache first
-            if self.cache_manager:
-                cached_history = self.cache_manager.get_historical_data(symbol, start_date, end_date, "GOLD")
-                if cached_history:
-                    logger.debug(f"Using cached historical data for {symbol}")
-                    return cached_history
-            
-            # LAST RESORT: Fetch from API (only if database is incomplete)
-            logger.warning(f"Database incomplete for {symbol}, fetching from API ({start_date} to {end_date})")
-            history = self._get_sjc_history(start_date, end_date)
-            
-            # Cache the results
-            if history and self.cache_manager:
-                self.cache_manager.set_historical_data(symbol, start_date, end_date, "GOLD", history)
-            
-            return history
+            # LAZY FETCH: Return cached data immediately
+            return self._get_history_lazy_fetch(normalized_symbol, symbol, start_date, end_date)
             
         except ValueError as e:
             logger.debug(f"Invalid symbol: {e}")
@@ -247,6 +236,188 @@ class GoldClient:
         except Exception as e:
             logger.error(f"Error fetching gold history for {symbol}: {e}")
             return []
+    
+    def _get_history_lazy_fetch(self, normalized_symbol: str, original_symbol: str, start_date: str, end_date: str) -> List[Dict]:
+        """
+        Simplified lazy fetch approach: Return cached data immediately.
+        
+        This method:
+        1. Returns whatever cached data exists RIGHT NOW
+        2. Triggers background fetch if needed
+        3. Applies unit conversion if needed
+        4. Never blocks waiting for API calls
+        """
+        try:
+            # Step 1: Get cached records immediately
+            cached_records = self.historical_cache.get_cached_records(normalized_symbol, start_date, end_date, "GOLD")
+            logger.info(f"Returning {len(cached_records)} cached records for {normalized_symbol}")
+            
+            # Step 2: Trigger background fetch if needed (non-blocking) - overlap detection disabled
+            if self.lazy_fetch_manager and self._needs_lazy_fetch(start_date, end_date, cached_records):
+                logger.info(f"Triggering lazy fetch for {normalized_symbol} ({start_date} to {end_date})")
+                try:
+                    self.lazy_fetch_manager.trigger_lazy_fetch(normalized_symbol, start_date, end_date, "GOLD")
+                except Exception as e:
+                    logger.warning(f"Failed to trigger lazy fetch: {e}")
+            
+            # Step 3: Apply unit conversion and return immediately
+            return self._apply_unit_conversion(cached_records, original_symbol)
+            
+        except Exception as e:
+            logger.error(f"Error in lazy fetch for {normalized_symbol}: {e}")
+            # Fallback to empty response rather than blocking
+            return []
+    
+    def _needs_lazy_fetch(self, start_date: str, end_date: str, cached_records: List[Dict]) -> bool:
+        """
+        Simple determination if lazy fetch is needed.
+        
+        Args:
+            start_date: Start date string
+            end_date: End date string
+            cached_records: Currently cached records
+            
+        Returns:
+            True if lazy fetch should be triggered
+        """
+        if not cached_records:
+            return True  # No data at all, definitely need fetch
+        
+        # Calculate expected trading days
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        
+        expected_days = sum(1 for day in range((end_dt - start_dt).days + 1)
+                          if (start_dt + timedelta(days=day)).weekday() < 5)
+        
+        # If we have less than 60% of expected data, trigger lazy fetch
+        completeness = len(cached_records) / expected_days if expected_days > 0 else 0
+        return completeness < 0.6
+    
+    def _should_trigger_lazy_fetch(self, symbol: str, start_date: str, end_date: str, cached_records: List[Dict]) -> bool:
+        """
+        Comprehensive check before triggering lazy fetch to avoid duplicates and overlaps.
+        
+        Args:
+            symbol: Asset symbol
+            start_date: Start date string
+            end_date: End date string
+            cached_records: Currently cached records
+            
+        Returns:
+            True if lazy fetch should be triggered
+        """
+        # Quick check: Is lazy fetch manager available?
+        if not self.lazy_fetch_manager:
+            return False
+            
+        # Quick check: Is data already sufficient?
+        if not self._needs_lazy_fetch(start_date, end_date, cached_records):
+            return False
+            
+        # Quick check: Is this range already being fetched?
+        fetch_key = f"{symbol}_{start_date}_{end_date}"
+        if fetch_key in self.lazy_fetch_manager._active_fetches:
+            logger.debug(f"Lazy fetch already active for {fetch_key}")
+            return False
+            
+        # DISABLED: Overlap detection causes deadlocks, using basic duplicate prevention only
+        # if self.lazy_fetch_manager._check_overlapping_ranges(symbol, start_date, end_date):
+        #     logger.info(f"Requested range overlaps with active lazy fetch for {symbol} ({start_date} to {end_date})")
+        #     return False
+            
+        return True
+    
+    def _get_history_cache_first(self, normalized_symbol: str, original_symbol: str, start_date: str, end_date: str) -> List[Dict]:
+        """
+        Fetch historical gold prices using cache-first incremental approach.
+        
+        This method:
+        1. Checks what dates are already cached
+        2. Identifies missing date ranges
+        3. Fetches only missing data from API
+        4. Merges cached and new data
+        """
+        try:
+            # Step 1: Get cached dates
+            cached_dates = self.historical_cache.get_cached_dates(normalized_symbol, start_date, end_date, "GOLD")
+            logger.info(f"Found {len(cached_dates)} cached dates for {normalized_symbol} ({start_date} to {end_date})")
+            
+            # Step 2: Calculate missing date ranges
+            missing_ranges = self.historical_cache.calculate_missing_date_ranges(start_date, end_date, cached_dates)
+            
+            if not missing_ranges:
+                # All data is cached, return cached records
+                logger.info(f"All data cached for {normalized_symbol}, returning cached records")
+                cached_records = self.historical_cache.get_cached_records(normalized_symbol, start_date, end_date, "GOLD")
+                return self._apply_unit_conversion(cached_records, original_symbol)
+            
+            # Step 3: Decide fetch strategy
+            total_days = (datetime.strptime(end_date, '%Y-%m-%d') - 
+                         datetime.strptime(start_date, '%Y-%m-%d')).days + 1
+            
+            fetch_full_range = self.historical_cache.should_fetch_full_range(missing_ranges, total_days)
+            
+            if fetch_full_range:
+                logger.info(f"Fetching full range for {normalized_symbol} (missing > 80% of data)")
+                new_records = self._get_sjc_history(start_date, end_date)
+            else:
+                logger.info(f"Fetching {len(missing_ranges)} missing ranges for {normalized_symbol}")
+                new_records = []
+                for range_start, range_end in missing_ranges:
+                    range_records = self._get_sjc_history(range_start, range_end)
+                    new_records.extend(range_records)
+            
+            # Step 4: Store new records in historical cache
+            if new_records:
+                stored_count = self.historical_cache.store_historical_records(normalized_symbol, "GOLD", new_records)
+                logger.info(f"Stored {stored_count} new records for {normalized_symbol}")
+                
+                # Mark date range as fetched (including weekends/holidays)
+                self.historical_cache.mark_date_range_as_fetched(normalized_symbol, "GOLD", start_date, end_date)
+            
+            # Step 5: Get complete merged data
+            cached_records = self.historical_cache.get_cached_records(normalized_symbol, start_date, end_date, "GOLD")
+            merged_records = self.historical_cache.merge_historical_data(cached_records, new_records)
+            
+            # Step 6: Apply unit conversion if needed
+            return self._apply_unit_conversion(merged_records, original_symbol)
+            
+        except Exception as e:
+            logger.error(f"Error in cache-first history fetch for {normalized_symbol}: {e}")
+            # Fallback to old method
+            return self._get_historical_from_database(start_date, end_date, original_symbol)
+    
+    def _apply_unit_conversion(self, records: List[Dict], symbol: str) -> List[Dict]:
+        """
+        Apply unit conversion to records if symbol is VN.GOLD.C (Chỉ).
+        
+        Args:
+            records: List of historical records
+            symbol: Original symbol requested
+            
+        Returns:
+            Records with unit conversion applied if needed
+        """
+        converted_records = []
+        
+        for record in records:
+            converted_record = record.copy()
+            # Always update symbol to the requested symbol
+            converted_record['symbol'] = symbol
+            
+            if symbol.endswith('.C'):
+                # Convert from Lượng to Chỉ (divide by 10)
+                for field in ['nav', 'open', 'high', 'low', 'close', 'adjclose', 'buy_price', 'sell_price']:
+                    if field in converted_record and converted_record[field] is not None:
+                        converted_record[field] = converted_record[field] / 10.0
+            
+            converted_records.append(converted_record)
+        
+        if symbol.endswith('.C'):
+            logger.info(f"Applied L→C conversion to {len(converted_records)} records for {symbol}")
+        
+        return converted_records
     
     def _get_sjc_history(self, start_date: str, end_date: str) -> List[Dict]:
         """Fetch SJC gold historical prices with rate limiting."""
@@ -309,9 +480,9 @@ class GoldClient:
 
     
     def get_latest_quote(self, symbol: str) -> Optional[Dict]:
-        """Fetch the latest gold price using database-first approach."""
+        """Fetch the latest gold price using database-first approach with unit conversion."""
         try:
-            _, provider = self.parse_symbol(symbol)
+            normalized_symbol, provider = self.parse_symbol(symbol)
         except ValueError as e:
             logger.debug(f"Invalid symbol: {e}")
             return None
@@ -321,9 +492,9 @@ class GoldClient:
             logger.error(f"Unsupported provider: {provider}. Only SJC is supported.")
             return None
         
-        # DATABASE-FIRST: Check database for latest data
+        # DATABASE-FIRST: Check database for latest data (use normalized symbol)
         today_str = datetime.now().strftime("%Y-%m-%d")
-        latest_db = self._get_latest_from_database(symbol)
+        latest_db = self._get_latest_from_database(normalized_symbol)
         
         if latest_db:
             # Check if data is recent (within 1 day)
@@ -333,15 +504,18 @@ class GoldClient:
             if days_old <= 1:
                 logger.info(f"Using database-first quote for {symbol} from {latest_db['date']}")
                 
+                # Apply unit conversion and update symbol
+                quote_data = self._apply_unit_conversion([latest_db], symbol)[0]
+                
                 # Cache the quote
                 if self.memory_cache:
-                    self.memory_cache.set_quote(symbol, "GOLD", latest_db)
+                    self.memory_cache.set_quote(symbol, "GOLD", quote_data)
                 
                 if self.cache_manager and self.ttl_manager:
                     ttl = self.ttl_manager.get_ttl_for_asset("GOLD")
-                    self.cache_manager.set_quote(symbol, "GOLD", latest_db, ttl_seconds=ttl)
+                    self.cache_manager.set_quote(symbol, "GOLD", quote_data, ttl_seconds=ttl)
                 
-                return latest_db
+                return quote_data
             else:
                 logger.debug(f"Database data for {symbol} is {days_old} days old, fetching fresh data")
         
@@ -371,7 +545,7 @@ class GoldClient:
         
         quote_data = None
         try:
-            quote_data = self._get_sjc_quote(symbol)
+            quote_data = self._get_sjc_quote(normalized_symbol)
             
             # Record API call for rate limiting
             if self.rate_limiter and quote_data:
@@ -387,7 +561,7 @@ class GoldClient:
             
             # Fallback: Check historical cache for most recent record
             if self.historical_cache:
-                recent_record = self.historical_cache.get_most_recent_record(symbol, 'GOLD', lookback_days=30)
+                recent_record = self.historical_cache.get_most_recent_record(normalized_symbol, 'GOLD', lookback_days=30)
                 if recent_record:
                     logger.info(f"Using historical fallback for gold {symbol} from {recent_record.get('date')}")
                     quote_data = recent_record
@@ -400,12 +574,13 @@ class GoldClient:
                     if history:
                         most_recent = history[-1]
                         logger.info(f"Using last week's most recent data for gold {symbol} from {most_recent.get('date')}")
-                        if "symbol" not in most_recent:
-                            most_recent["symbol"] = symbol
                         quote_data = most_recent
         
-        # Cache the final result
+        # Apply unit conversion if needed
         if quote_data:
+            quote_data = self._apply_unit_conversion([quote_data], symbol)[0]
+            
+            # Cache the final result
             if self.memory_cache:
                 self.memory_cache.set_quote(symbol, "GOLD", quote_data)
             
@@ -458,19 +633,31 @@ class GoldClient:
 
     
     def search_gold(self, symbol: str) -> Optional[Dict]:
-        """Return gold asset information for search results."""
+        """Return gold asset information for search results with unit information."""
         try:
-            _, provider = self.parse_symbol(symbol)
+            normalized_symbol, provider = self.parse_symbol(symbol)
             config = self.PROVIDERS[provider]
             
+            # Determine unit and description
+            if symbol.upper().endswith('.C'):
+                unit = "Chỉ"
+                unit_description = "1 Chỉ = 0.1 Lượng"
+                name_suffix = " (Chỉ)"
+            else:
+                unit = "Lượng"
+                unit_description = "1 Lượng = 10 Chỉ"
+                name_suffix = " (Lượng)"
+            
             return {
-                "symbol": symbol,
-                "name": f"Gold - {config['name']}",
+                "symbol": symbol.upper(),
+                "name": f"Gold - {config['name']}{name_suffix}",
                 "provider": provider,
                 "provider_name": config["name"],
                 "asset_type": "Commodity",
                 "exchange": provider.upper(),
-                "currency": "VND"  # SJC gold is always in VND
+                "currency": "VND",
+                "unit": unit,
+                "unit_description": unit_description
             }
         except ValueError as e:
             logger.debug(f"Invalid symbol: {e}")
@@ -480,18 +667,33 @@ class GoldClient:
             return None
     
     def get_all_gold_providers(self) -> List[Dict]:
-        """Return all available gold providers with their information."""
+        """Return all available gold providers with their information including both units."""
         providers = []
-        for provider_key, config in self.PROVIDERS.items():
-            # Use the primary symbol for each provider
-            primary_symbol = config["symbols"][0]
-            providers.append({
-                "symbol": primary_symbol,
-                "name": f"Gold - {config['name']}",
-                "provider": provider_key,
-                "provider_name": config["name"],
-                "asset_type": "Commodity",
-                "exchange": provider_key.upper(),
-                "currency": "VND"  # SJC gold is always in VND
-            })
+        
+        # Add VN.GOLD (Lượng)
+        providers.append({
+            "symbol": "VN.GOLD",
+            "name": "Gold - Saigon Jewelry Company (Lượng)",
+            "provider": "sjc",
+            "provider_name": "Saigon Jewelry Company",
+            "asset_type": "Commodity",
+            "exchange": "SJC",
+            "currency": "VND",
+            "unit": "Lượng",
+            "unit_description": "1 Lượng = 10 Chỉ"
+        })
+        
+        # Add VN.GOLD.C (Chỉ)
+        providers.append({
+            "symbol": "VN.GOLD.C",
+            "name": "Gold - Saigon Jewelry Company (Chỉ)",
+            "provider": "sjc",
+            "provider_name": "Saigon Jewelry Company",
+            "asset_type": "Commodity",
+            "exchange": "SJC",
+            "currency": "VND",
+            "unit": "Chỉ",
+            "unit_description": "1 Chỉ = 0.1 Lượng"
+        })
+        
         return providers

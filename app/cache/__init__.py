@@ -19,7 +19,19 @@ from .background_manager import BackgroundCacheManager, start_cache_background_t
 from .data_seeder import DataSeeder, get_data_seeder
 from .migrations import CacheMigration, migrate_database, check_migration_status
 from .quote_ttl_manager import QuoteTTLManager, get_ttl_manager, get_ttl_for_asset
-from .historical_cache import HistoricalCacheManager, get_historical_cache
+from .historical_cache import (
+    HistoricalCacheManager, get_historical_cache,
+    StockHistoricalCacheManager, get_stock_historical_cache,
+    GoldHistoricalCacheManager, get_gold_historical_cache,
+    FundHistoricalCacheManager, get_fund_historical_cache,
+    IndexHistoricalCacheManager, get_index_historical_cache
+)
+# TODO: Fix circular import issue
+# try:
+#     from .lazy_fetch_manager import LazyFetchManager
+# except ImportError:
+#     LazyFetchManager = None
+LazyFetchManager = None
 from .rate_limit_protector import RateLimitProtector, get_rate_limiter
 
 __all__ = [
@@ -58,6 +70,17 @@ __all__ = [
     # Historical data
     'HistoricalCacheManager',
     'get_historical_cache',
+    'StockHistoricalCacheManager',
+    'get_stock_historical_cache',
+    'GoldHistoricalCacheManager',
+    'get_gold_historical_cache',
+    'FundHistoricalCacheManager',
+    'get_fund_historical_cache',
+    'IndexHistoricalCacheManager',
+    'get_index_historical_cache',
+    
+    # Lazy fetch
+    'LazyFetchManager',
     
     # Rate limiting
     'RateLimitProtector',

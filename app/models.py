@@ -190,6 +190,8 @@ class GoldSearchResponse(BaseModel):
     asset_sub_class: str = "Precious Metal"
     exchange: str
     currency: str = "VND"
+    unit: Optional[str] = None
+    unit_description: Optional[str] = None
     data_source: str = "VN_MARKET"
 
 class GoldQuoteResponse(BaseModel):
@@ -209,6 +211,7 @@ class GoldQuoteResponse(BaseModel):
     data_source: str = "VN_MARKET"
 
 class GoldHistoryItem(BaseModel):
+    symbol: str
     date: str
     nav: float
     open: float

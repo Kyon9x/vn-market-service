@@ -6,6 +6,7 @@ This module implements smart caching for historical market data:
 - Fetches only missing date ranges
 - Merges cached and new data
 - Historical data never expires (immutable)
+- Asset-specific cache managers for different trading patterns
 """
 
 import sqlite3
@@ -18,11 +19,12 @@ from datetime import datetime, timedelta, date
 
 logger = logging.getLogger(__name__)
 
-class HistoricalCacheManager:
+
+class BaseHistoricalCacheManager:
     """
-    Manages incremental caching of historical market data.
+    Base class for asset-specific historical cache managers.
     
-    Key features:
+    Provides common functionality for caching historical market data:
     - Store individual records instead of date ranges
     - Smart detection of missing dates
     - Minimal API calls by fetching only gaps
@@ -112,72 +114,6 @@ class HistoricalCacheManager:
             finally:
                 conn.close()
     
-    def mark_date_range_as_fetched(self, symbol: str, asset_type: str, 
-                                    start_date: str, end_date: str) -> int:
-        """
-        Mark a date range as fetched by creating null records for missing dates.
-        This prevents repeated API calls for dates with no trading data (weekends/holidays).
-        
-        Args:
-            symbol: Asset symbol
-            asset_type: Type of asset
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            
-        Returns:
-            Number of null records created
-        """
-        try:
-            start = datetime.strptime(start_date, '%Y-%m-%d').date()
-            end = datetime.strptime(end_date, '%Y-%m-%d').date()
-        except ValueError as e:
-            logger.error(f"Invalid date format: {e}")
-            return 0
-        
-        # Get dates that already exist in cache
-        cached_dates = self.get_cached_dates(symbol, start_date, end_date, asset_type)
-        
-        # Generate all dates in range
-        all_dates = set()
-        current = start
-        while current <= end:
-            all_dates.add(current.strftime('%Y-%m-%d'))
-            current += timedelta(days=1)
-        
-        # Find dates that need null markers
-        dates_to_mark = all_dates - cached_dates
-        
-        if not dates_to_mark:
-            return 0
-        
-        # Create null records for these dates
-        with self._lock:
-            conn = sqlite3.connect(self.db_path)
-            try:
-                cursor = conn.cursor()
-                marked_count = 0
-                
-                for date_str in dates_to_mark:
-                    # Insert a null record (all prices NULL, volume 0)
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO historical_records
-                        (symbol, asset_type, date, open, high, low, close, adjclose,
-                         volume, nav, buy_price, sell_price, data_json, updated_at)
-                        VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, '{}', ?)
-                    ''', (symbol, asset_type, date_str, datetime.now()))
-                    marked_count += 1
-                
-                conn.commit()
-                logger.debug(f"Marked {marked_count} no-data dates for {symbol} ({asset_type})")
-                return marked_count
-                
-            except Exception as e:
-                logger.error(f"Error marking date range as fetched for {symbol}: {e}")
-                conn.rollback()
-                return 0
-            finally:
-                conn.close()
-    
     def get_cached_dates(self, symbol: str, start_date: str, end_date: str,
                         asset_type: str) -> Set[str]:
         """
@@ -233,14 +169,34 @@ class HistoricalCacheManager:
             try:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    SELECT data_json FROM historical_records
+                    SELECT date, open, high, low, close, adjclose, volume, 
+                           nav, buy_price, sell_price
+                    FROM historical_records
                     WHERE symbol = ? AND asset_type = ?
                     AND date BETWEEN ? AND ?
-                    AND data_json != '{}'
+                    AND open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL
+                    AND NOT (open = 0.0 AND high = 0.0 AND low = 0.0 AND close = 0.0)
                     ORDER BY date ASC
                 ''', (symbol, asset_type, start_date, end_date))
                 
-                records = [json.loads(row[0]) for row in cursor.fetchall()]
+                records = []
+                for row in cursor.fetchall():
+                    # Handle NULL values by converting to appropriate defaults
+                    nav = row[7] if row[7] is not None else 0.0
+                    record = {
+                        'date': row[0],
+                        'open': row[1] if row[1] is not None else nav,
+                        'high': row[2] if row[2] is not None else nav, 
+                        'low': row[3] if row[3] is not None else nav,
+                        'close': row[4] if row[4] is not None else nav,
+                        'adjclose': row[5] if row[5] is not None else nav,
+                        'volume': row[6] if row[6] is not None else 0.0,
+                        'nav': nav,
+                        'buy_price': row[8] if row[8] is not None else 0.0,
+                        'sell_price': row[9] if row[9] is not None else 0.0
+                    }
+                    records.append(record)
+                
                 logger.debug(f"Retrieved {len(records)} cached records for {symbol}")
                 return records
                 
@@ -449,35 +405,6 @@ class HistoricalCacheManager:
             finally:
                 conn.close()
     
-    def _extract_date(self, record: Dict) -> Optional[str]:
-        """Extract and normalize date from record."""
-        # Try different date field names
-        for field in ['date', 'time', 'trading_date', 'Date', 'Time']:
-            if field in record:
-                date_value = record[field]
-                if isinstance(date_value, str):
-                    # Try to parse and normalize
-                    try:
-                        dt = datetime.strptime(date_value, '%Y-%m-%d')
-                        return dt.strftime('%Y-%m-%d')
-                    except ValueError:
-                        try:
-                            dt = datetime.strptime(date_value[:10], '%Y-%m-%d')
-                            return dt.strftime('%Y-%m-%d')
-                        except ValueError:
-                            pass
-                return str(date_value)[:10]
-        return None
-    
-    def _safe_float(self, value) -> Optional[float]:
-        """Safely convert value to float."""
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            return None
-    
     def get_most_recent_record(self, symbol: str, asset_type: str, 
                               lookback_days: int = 30) -> Optional[Dict]:
         """
@@ -525,13 +452,314 @@ class HistoricalCacheManager:
                 return None
             finally:
                 conn.close()
+    
+    def _extract_date(self, record: Dict) -> Optional[str]:
+        """Extract and normalize date from record."""
+        # Try different date field names
+        for field in ['date', 'time', 'trading_date', 'Date', 'Time']:
+            if field in record:
+                date_value = record[field]
+                if isinstance(date_value, str):
+                    # Try to parse and normalize
+                    try:
+                        dt = datetime.strptime(date_value, '%Y-%m-%d')
+                        return dt.strftime('%Y-%m-%d')
+                    except ValueError:
+                        try:
+                            dt = datetime.strptime(date_value[:10], '%Y-%m-%d')
+                            return dt.strftime('%Y-%m-%d')
+                        except ValueError:
+                            pass
+                return str(date_value)[:10]
+        return None
+    
+    def _safe_float(self, value) -> Optional[float]:
+        """Safely convert value to float."""
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+    
+    # Abstract methods to be implemented by asset-specific classes
+    def mark_date_range_as_fetched(self, symbol: str, asset_type: str, 
+                                    start_date: str, end_date: str) -> int:
+        """
+        Mark a date range as fetched by creating null records for missing dates.
+        This prevents repeated API calls for dates with no trading data.
+        
+        Args:
+            symbol: Asset symbol
+            asset_type: Type of asset
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            Number of null records created
+        """
+        raise NotImplementedError("Subclasses must implement mark_date_range_as_fetched")
 
-# Global instance
-_historical_cache: Optional[HistoricalCacheManager] = None
+
+class HistoricalCacheManager(BaseHistoricalCacheManager):
+    """
+    Legacy historical cache manager for backward compatibility.
+    
+    This is the original shared cache manager that all asset types used.
+    Kept for backward compatibility but should be replaced with asset-specific managers.
+    """
+    
+    def mark_date_range_as_fetched(self, symbol: str, asset_type: str, 
+                                    start_date: str, end_date: str) -> int:
+        """
+        Mark a date range as fetched by creating null records for missing dates.
+        This prevents repeated API calls for dates with no trading data (weekends/holidays).
+        
+        Args:
+            symbol: Asset symbol
+            asset_type: Type of asset
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            Number of null records created
+        """
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except ValueError as e:
+            logger.error(f"Invalid date format: {e}")
+            return 0
+        
+        # Get dates that already exist in cache
+        cached_dates = self.get_cached_dates(symbol, start_date, end_date, asset_type)
+        
+        # Generate all dates in range
+        all_dates = set()
+        current = start
+        while current <= end:
+            all_dates.add(current.strftime('%Y-%m-%d'))
+            current += timedelta(days=1)
+        
+        # Find dates that need null markers
+        dates_to_mark = all_dates - cached_dates
+        
+        if not dates_to_mark:
+            return 0
+        
+        # Create null records for these dates
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                marked_count = 0
+                
+                for date_str in dates_to_mark:
+                    # Insert a valid record with default values (not NULL to avoid validation errors)
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO historical_records
+                        (symbol, asset_type, date, open, high, low, close, adjclose,
+                         volume, nav, buy_price, sell_price, data_json, updated_at)
+                        VALUES (?, ?, ?, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, '{}', ?)
+                    ''', (symbol, asset_type, date_str, datetime.now()))
+                    marked_count += 1
+                
+                conn.commit()
+                logger.debug(f"Marked {marked_count} no-data dates for {symbol} ({asset_type})")
+                return marked_count
+                
+            except Exception as e:
+                logger.error(f"Error marking date range as fetched for {symbol}: {e}")
+                conn.rollback()
+                return 0
+            finally:
+                conn.close()
+
+
+class StockHistoricalCacheManager(BaseHistoricalCacheManager):
+    """
+    Asset-specific cache manager for stock historical data.
+    
+    Key features:
+    - Excludes weekends entirely (stocks don't trade on weekends)
+    - Market hours dependent data handling
+    - Optimized for equity trading patterns
+    """
+    
+    def mark_date_range_as_fetched(self, symbol: str, asset_type: str, 
+                                    start_date: str, end_date: str) -> int:
+        """
+        For stocks: Don't create 0.0 placeholder records.
+        Only store actual trading data from API responses.
+        
+        Args:
+            symbol: Asset symbol
+            asset_type: Type of asset (should be 'STOCK')
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            Number of null records created (always 0 - no placeholders)
+        """
+        logger.debug(f"Stock cache: Skipping placeholder creation for {symbol} {start_date} to {end_date}")
+        return 0
+
+
+class GoldHistoricalCacheManager(BaseHistoricalCacheManager):
+    """
+    Asset-specific cache manager for gold historical data.
+    
+    Key features:
+    - Includes weekends (gold trades on weekends)
+    - LazyFetch integration for background enrichment
+    - Optimized for commodity trading patterns
+    """
+    
+    def __init__(self, db_path: str = "db/assets.db"):
+        super().__init__(db_path)
+        self.lazy_fetch_manager = None
+        # Try to import LazyFetchManager for gold-specific functionality
+        # TODO: Fix circular import issue
+        self.lazy_fetch_manager = None
+        # try:
+        #     from app.cache.lazy_fetch_manager import LazyFetchManager
+        #     self.lazy_fetch_manager = LazyFetchManager(db_path)
+        # except ImportError:
+        #     logger.warning("LazyFetchManager not available for gold cache")
+    
+    def mark_date_range_as_fetched(self, symbol: str, asset_type: str, 
+                                    start_date: str, end_date: str) -> int:
+        """
+        For gold: Don't create 0.0 placeholder records.
+        Only store actual price data from API responses.
+        Triggers lazy fetch for background enrichment.
+        
+        Args:
+            symbol: Asset symbol
+            asset_type: Type of asset (should be 'GOLD')
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            Number of null records created (always 0 - no placeholders)
+        """
+        logger.debug(f"Gold cache: Skipping placeholder creation for {symbol} {start_date} to {end_date}")
+        
+        # Trigger lazy fetch for gold if available
+        if self.lazy_fetch_manager:
+            try:
+                self.lazy_fetch_manager.add_lazy_fetch_task(symbol, start_date, end_date)
+                logger.debug(f"Added lazy fetch task for {symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to add lazy fetch task: {e}")
+        
+        return 0
+
+
+class FundHistoricalCacheManager(BaseHistoricalCacheManager):
+    """
+    Asset-specific cache manager for mutual fund historical data.
+    
+    Key features:
+    - Graceful handling of missing weekday data (funds may miss reporting)
+    - NAV-based data structure
+    - Tolerant of reporting delays
+    """
+    
+    def mark_date_range_as_fetched(self, symbol: str, asset_type: str, 
+                                    start_date: str, end_date: str) -> int:
+        """
+        For funds: Don't create 0.0 placeholder records.
+        Only store actual NAV data from API responses.
+        
+        Args:
+            symbol: Asset symbol
+            asset_type: Type of asset (should be 'FUND')
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            Number of null records created (always 0 - no placeholders)
+        """
+        logger.debug(f"Fund cache: Skipping placeholder creation for {symbol} {start_date} to {end_date}")
+        return 0
+
+
+class IndexHistoricalCacheManager(BaseHistoricalCacheManager):
+    """
+    Asset-specific cache manager for index historical data.
+    
+    Key features:
+    - Excludes weekends (indices follow market hours)
+    - Market hours dependent data handling
+    - Optimized for index trading patterns
+    """
+    
+    def mark_date_range_as_fetched(self, symbol: str, asset_type: str, 
+                                    start_date: str, end_date: str) -> int:
+        """
+        For indices: Don't create 0.0 placeholder records.
+        Only store actual index data from API responses.
+        
+        Args:
+            symbol: Asset symbol
+            asset_type: Type of asset (should be 'INDEX')
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            Number of null records created (always 0 - no placeholders)
+        """
+        logger.debug(f"Index cache: Skipping placeholder creation for {symbol} {start_date} to {end_date}")
+        return 0
+
+
+# Global instances for asset-specific cache managers
+_stock_historical_cache: Optional[StockHistoricalCacheManager] = None
+_gold_historical_cache: Optional[GoldHistoricalCacheManager] = None
+_fund_historical_cache: Optional[FundHistoricalCacheManager] = None
+_index_historical_cache: Optional[IndexHistoricalCacheManager] = None
+_historical_cache: Optional[HistoricalCacheManager] = None  # Legacy shared cache
+
+
+def get_stock_historical_cache(db_path: str = "db/assets.db") -> StockHistoricalCacheManager:
+    """Get or create the stock-specific historical cache manager instance."""
+    global _stock_historical_cache
+    if _stock_historical_cache is None:
+        _stock_historical_cache = StockHistoricalCacheManager(db_path)
+    return _stock_historical_cache
+
+
+def get_gold_historical_cache(db_path: str = "db/assets.db") -> GoldHistoricalCacheManager:
+    """Get or create the gold-specific historical cache manager instance."""
+    global _gold_historical_cache
+    if _gold_historical_cache is None:
+        _gold_historical_cache = GoldHistoricalCacheManager(db_path)
+    return _gold_historical_cache
+
+
+def get_fund_historical_cache(db_path: str = "db/assets.db") -> FundHistoricalCacheManager:
+    """Get or create the fund-specific historical cache manager instance."""
+    global _fund_historical_cache
+    if _fund_historical_cache is None:
+        _fund_historical_cache = FundHistoricalCacheManager(db_path)
+    return _fund_historical_cache
+
+
+def get_index_historical_cache(db_path: str = "db/assets.db") -> IndexHistoricalCacheManager:
+    """Get or create the index-specific historical cache manager instance."""
+    global _index_historical_cache
+    if _index_historical_cache is None:
+        _index_historical_cache = IndexHistoricalCacheManager(db_path)
+    return _index_historical_cache
+
 
 def get_historical_cache(db_path: str = "db/assets.db") -> HistoricalCacheManager:
     """
     Get or create the global historical cache manager instance.
+    
+    DEPRECATED: Use asset-specific getters instead.
+    Kept for backward compatibility.
     
     Args:
         db_path: Path to SQLite database
@@ -543,6 +771,7 @@ def get_historical_cache(db_path: str = "db/assets.db") -> HistoricalCacheManage
     if _historical_cache is None:
         _historical_cache = HistoricalCacheManager(db_path)
     return _historical_cache
+
 
 if __name__ == "__main__":
     # Demo and testing
