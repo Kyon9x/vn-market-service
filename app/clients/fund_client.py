@@ -18,7 +18,7 @@ class FundClient:
         self._funds_map: Dict[str, int] = {}
         self._cache_timestamp: Optional[datetime] = None
         self._cache_duration = timedelta(hours=24)
-        self._fund_api = self._initialize_fund_api()
+        self._fund_api = None  # Lazy initialization
         self.cache_manager = cache_manager
         self.memory_cache = memory_cache
 
@@ -57,7 +57,20 @@ class FundClient:
             raise last_error
         
         raise RuntimeError("Fund API initialization failed - no error details available")
-    
+
+    def _ensure_fund_api_initialized(self, max_retries: int = 3) -> bool:
+        """Ensure the Fund API is initialized. Returns True if successful, False otherwise."""
+        if self._fund_api is not None:
+            return True
+
+        try:
+            self._fund_api = self._initialize_fund_api(max_retries)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize Fund API: {e}")
+            self._fund_api = None
+            return False
+
     def _is_cache_valid(self) -> bool:
         if self._cache_timestamp is None:
             return False
@@ -65,10 +78,14 @@ class FundClient:
     
     @log_provider_call(provider_name="vnstock", metadata_fields={"count": lambda r: len(r) if r is not None else 0})
     def _fetch_funds_listing_from_provider(self) -> Optional[pd.DataFrame]:
+        if not self._ensure_fund_api_initialized():
+            return None
         return self._fund_api.listing()
 
     @log_provider_call(provider_name="vnstock", metadata_fields={"fund_id": lambda r: r.get("fund_id", 0)})
     def _fetch_fund_nav_report_from_provider(self, fund_id: int) -> Optional[pd.DataFrame]:
+        if not self._ensure_fund_api_initialized():
+            return None
         return self._fund_api.nav_report(fund_id)
 
     @log_provider_call(provider_name="vnstock", metadata_fields={"fund_id": lambda r: r.get("fund_id", 0), "rows": lambda r: len(r) if r is not None else 0})
@@ -133,7 +150,10 @@ class FundClient:
             try:
                 logger.info(f"Fetching fund listing (attempt {attempt + 1}/{max_retries})...")
                 funds_df = self._fetch_funds_listing_from_provider()
-                
+
+                if funds_df is None or funds_df.empty:
+                    raise Exception("Empty or None response from fund listing API")
+
                 funds: List[Dict] = []
                 self._funds_map = {}
                 for _, row in funds_df.iterrows():

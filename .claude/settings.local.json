@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(./.venv/bin/python:*)"
+      "Bash(./.venv/bin/python:*)",
+      "Bash(timeout:*)",
+      "Bash(gtimeout:*)"
     ],
     "deny": [],
     "ask": []
