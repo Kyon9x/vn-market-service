@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   vn-market-service:
     container_name: vn-market-service-test

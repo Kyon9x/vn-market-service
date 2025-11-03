@@ -10,6 +10,14 @@ from vnstock.core.utils.user_agent import get_headers
 from app.cache import get_fund_historical_cache, get_rate_limiter, get_ttl_manager
 from app.utils.provider_logger import log_provider_call
 
+# Import LazyFetchManager separately to avoid circular import issues
+try:
+    from app.cache.lazy_fetch_manager import LazyFetchManager
+    LAZY_FETCH_AVAILABLE = True
+except ImportError:
+    LazyFetchManager = None
+    LAZY_FETCH_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 class FundClient:
@@ -30,6 +38,9 @@ class FundClient:
         self.historical_cache = get_fund_historical_cache()
         self.rate_limiter = get_rate_limiter()
         self.ttl_manager = get_ttl_manager()
+        
+        # Lazy fetch manager for background data enrichment
+        self.lazy_fetch_manager = LazyFetchManager(db_path="db/assets.db", fund_client=self) if LazyFetchManager else None
     
     def _initialize_fund_api(self, max_retries: int = 3) -> Fund:
         """Initialize Fund API with retry logic for timeout handling."""
@@ -80,13 +91,15 @@ class FundClient:
     def _fetch_funds_listing_from_provider(self) -> Optional[pd.DataFrame]:
         if not self._ensure_fund_api_initialized():
             return None
-        return self._fund_api.listing()
+        fund_api = self._fund_api  # Local variable for type checker
+        return fund_api.listing()
 
     @log_provider_call(provider_name="vnstock", metadata_fields={"fund_id": lambda r: r.get("fund_id", 0)})
     def _fetch_fund_nav_report_from_provider(self, fund_id: int) -> Optional[pd.DataFrame]:
         if not self._ensure_fund_api_initialized():
             return None
-        return self._fund_api.nav_report(fund_id)
+        fund_api = self._fund_api  # Local variable for type checker
+        return fund_api.nav_report(fund_id)
 
     @log_provider_call(provider_name="vnstock", metadata_fields={"fund_id": lambda r: r.get("fund_id", 0), "rows": lambda r: len(r) if r is not None else 0})
     def _fetch_fund_nav_history_from_provider(self, fund_id: int, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
@@ -250,17 +263,203 @@ class FundClient:
             logger.error(f"Error searching fund {symbol}: {e}")
             return None
     
-    def get_fund_nav_history(self, symbol: str, start_date: str, end_date: str, max_retries: int = 2) -> List[Dict]:
-        """Fetch NAV history with incremental caching support."""
-        # Try incremental caching first
+    def get_fund_nav_history(self, symbol: str, start_date: str, end_date: str, 
+                            max_retries: int = 2, use_lazy_fetch: bool = True) -> List[Dict]:
+        """Fetch NAV history with lazy fetch support by default."""
+        
+        # Use lazy fetch by default (non-blocking, immediate response)
+        if use_lazy_fetch and self.historical_cache:
+            try:
+                return self._get_fund_history_lazy_fetch(symbol, start_date, end_date)
+            except Exception as e:
+                logger.warning(f"Lazy fetch failed for {symbol}, falling back to incremental: {e}")
+        
+        # Fallback to incremental caching (current behavior)
         if self.historical_cache:
             try:
                 return self._get_fund_nav_history_incremental(symbol, start_date, end_date, max_retries)
             except Exception as e:
                 logger.warning(f"Incremental caching failed for {symbol}, falling back to full fetch: {e}")
         
-        # Fallback to full fetch
+        # Last resort: full fetch
         return self._fetch_fund_nav_history_raw(symbol, start_date, end_date, max_retries)
+    
+    def _get_fund_history_lazy_fetch(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
+        """
+        Cache-first hybrid approach: Check cache first, then vnstock as fallback.
+        
+        This method:
+        1. Check cache first (prioritize cached data to minimize vnstock calls)
+        2. If cache is sufficient (>80% complete), return immediately
+        3. Only if cache insufficient, try vnstock native method
+        4. Trigger background fetch for any remaining gaps
+        5. Never blocks waiting for API calls
+        """
+        try:
+            # Step 1: Check cache FIRST to minimize vnstock calls
+            cached_records = self.historical_cache.get_cached_records(symbol, start_date, end_date, "FUND")
+            logger.info(f"Cache check for {symbol}: {len(cached_records)} records found")
+            
+            # Step 2: Assess cache completeness - if sufficient, return immediately
+            if not self._needs_lazy_fetch_hybrid(start_date, end_date, cached_records):
+                logger.info(f"Cache sufficient for {symbol} ({len(cached_records)} records), returning cached data")
+                
+                # Still trigger background fetch for any minor gaps if needed
+                if self.lazy_fetch_manager and self._needs_lazy_fetch(start_date, end_date, cached_records):
+                    logger.info(f"Triggering lazy fetch for minor gaps in {symbol}")
+                    try:
+                        self.lazy_fetch_manager.trigger_lazy_fetch(symbol, start_date, end_date, "FUND")
+                    except Exception as e:
+                        logger.warning(f"Failed to trigger lazy fetch: {e}")
+                
+                return self._format_nav_records(cached_records)
+            
+            # Step 3: Cache insufficient, try vnstock native method as fallback
+            logger.info(f"Cache insufficient for {symbol}, trying vnstock native method")
+            complete_records = self._get_complete_nav_history_vnstock(symbol)
+            if complete_records is not None and not complete_records.empty:
+                logger.info(f"Got {len(complete_records)} records from vnstock nav_report for {symbol}")
+                
+                # Filter to requested date range
+                complete_records['date'] = pd.to_datetime(complete_records['date'])
+                start_dt = pd.to_datetime(start_date)
+                end_dt = pd.to_datetime(end_date)
+                
+                mask = (complete_records['date'] >= start_dt) & (complete_records['date'] <= end_dt)
+                filtered_records = complete_records.loc[mask]
+                
+                if not filtered_records.empty:
+                    # Convert to standard format
+                    formatted_records = []
+                    for _, row in filtered_records.iterrows():
+                        nav_value = row.get("nav_per_unit", 0.0)
+                        nav = float(nav_value) if nav_value else 0.0
+                        date_val = row.get("date")
+                        date_str = date_val.strftime("%Y-%m-%d") if isinstance(date_val, pd.Timestamp) else str(date_val)
+                        
+                        formatted_records.append({
+                            "symbol": symbol,
+                            "date": date_str,
+                            "nav": nav,
+                            "open": nav,
+                            "high": nav,
+                            "low": nav,
+                            "close": nav,
+                            "adjclose": nav,
+                            "volume": 0.0
+                        })
+                    
+                    # Store in cache for future requests (reduces future vnstock calls)
+                    if self.historical_cache:
+                        try:
+                            self.historical_cache.store_historical_records(symbol, "FUND", formatted_records)
+                            logger.info(f"Stored {len(formatted_records)} vnstock records in cache for {symbol}")
+                        except Exception as e:
+                            logger.warning(f"Failed to store vnstock records in cache: {e}")
+                    
+                    # Check if we need additional lazy fetch for any remaining gaps
+                    if self.lazy_fetch_manager and self._needs_lazy_fetch_hybrid(start_date, end_date, formatted_records):
+                        logger.info(f"Triggering additional lazy fetch for gaps in {symbol}")
+                        try:
+                            self.lazy_fetch_manager.trigger_lazy_fetch(symbol, start_date, end_date, "FUND")
+                        except Exception as e:
+                            logger.warning(f"Failed to trigger additional lazy fetch: {e}")
+                    
+                    return formatted_records
+            
+            # Step 4: Both cache and vnstock failed/insufficient, use cache + background fetch
+            logger.info(f"Both cache and vnstock insufficient for {symbol}, using cache + background fetch")
+            
+            # Trigger background fetch if needed (non-blocking)
+            if self.lazy_fetch_manager and self._needs_lazy_fetch(start_date, end_date, cached_records):
+                logger.info(f"Triggering lazy fetch for {symbol} ({start_date} to {end_date})")
+                try:
+                    self.lazy_fetch_manager.trigger_lazy_fetch(symbol, start_date, end_date, "FUND")
+                except Exception as e:
+                    logger.warning(f"Failed to trigger lazy fetch: {e}")
+            
+            # Step 5: Return whatever cached data we have (don't wait for background)
+            return self._format_nav_records(cached_records)
+            
+        except Exception as e:
+            logger.error(f"Error in cache-first hybrid lazy fetch for {symbol}: {e}")
+            # Fallback to empty response rather than blocking
+            return []
+
+    def _get_complete_nav_history_vnstock(self, symbol: str) -> Optional[pd.DataFrame]:
+        """Try to get complete NAV history using vnstock native method."""
+        try:
+            # Get fund ID first
+            fund_id = self._get_fund_id(symbol)
+            if not fund_id:
+                logger.warning(f"Fund ID not found for symbol: {symbol}")
+                return None
+                
+            if self._ensure_fund_api_initialized() and self._fund_api is not None:
+                fund_api = self._fund_api  # Local variable for type checker
+                return fund_api.nav_report(fund_id)
+            else:
+                logger.warning(f"Fund API not initialized for {symbol}")
+                return None
+        except Exception as e:
+            logger.warning(f"vnstock nav_report failed for {symbol}: {e}")
+            return None
+
+    def _needs_lazy_fetch_hybrid(self, start_date: str, end_date: str, complete_records: List[Dict]) -> bool:
+        """
+        Enhanced logic for hybrid approach.
+        
+        Args:
+            start_date: Start date string
+            end_date: End date string
+            complete_records: Records from vnstock native method
+            
+        Returns:
+            True if lazy fetch should be triggered
+        """
+        # If we got complete data from vnstock native method
+        if complete_records:
+            # Check if coverage is sufficient (>80% of expected trading days)
+            expected_days = sum(1 for day in range((datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days + 1)
+                                  if (datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=day)).weekday() < 5)
+            completeness = len(complete_records) / expected_days if expected_days > 0 else 0
+            return completeness < 0.8
+        
+        # If no complete data, always use lazy fetch
+        return True
+
+    def _calculate_trading_days(self, start_date: str, end_date: str) -> int:
+        """Calculate expected trading days (weekdays only) for date range."""
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        return sum(1 for day in range((end_dt - start_dt).days + 1)
+                      if (start_dt + timedelta(days=day)).weekday() < 5)
+
+    def _needs_lazy_fetch(self, start_date: str, end_date: str, cached_records: List[Dict]) -> bool:
+        """
+        Simple determination if lazy fetch is needed.
+        
+        Args:
+            start_date: Start date string
+            end_date: End date string
+            cached_records: Currently cached records
+            
+        Returns:
+            True if lazy fetch should be triggered
+        """
+        if not cached_records:
+            return True  # No data at all, definitely need fetch
+        
+        # Calculate expected trading days (weekdays only)
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        
+        expected_days = sum(1 for day in range((end_dt - start_dt).days + 1)
+                          if (start_dt + timedelta(days=day)).weekday() < 5)
+        
+        # If we have less than 60% of expected data, trigger lazy fetch
+        completeness = len(cached_records) / expected_days if expected_days > 0 else 0
+        return completeness < 0.6
     
     def _get_fund_nav_history_incremental(self, symbol: str, start_date: str, end_date: str, max_retries: int = 2) -> List[Dict]:
         """Fetch NAV history using incremental caching."""
@@ -414,7 +613,10 @@ class FundClient:
                     return None
                 
                 logger.info(f"Fetching latest NAV for {symbol} (attempt {attempt + 1}/{max_retries})...")
-                nav_df = self._fund_api.nav_report(fund_id)
+                if not self._ensure_fund_api_initialized():
+                    return None
+                fund_api = self._fund_api  # Local variable for type checker
+                nav_df = fund_api.nav_report(fund_id)
                 if nav_df is None or nav_df.empty:
                     logger.debug(f"No current NAV data for {symbol}, checking historical fallback")
                     
@@ -435,7 +637,7 @@ class FundClient:
                         logger.info(f"No historical cache for fund {symbol}, fetching last week's data")
                         one_week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
                         today_str = datetime.now().strftime("%Y-%m-%d")
-                        history = self.get_fund_history(symbol, one_week_ago, today_str)
+                        history = self.get_fund_nav_history(symbol, one_week_ago, today_str)
                         
                         if history:
                             most_recent = history[-1]

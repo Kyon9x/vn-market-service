@@ -15,6 +15,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 from pathlib import Path
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,10 @@ class LazyFetchManager:
     - Progress tracking and status monitoring
     """
     
-    def __init__(self, db_path: str = "db/assets.db", gold_client=None):
+    def __init__(self, db_path: str = "db/assets.db", gold_client=None, fund_client=None):
         self.db_path = Path(db_path)
         self.gold_client = gold_client
+        self.fund_client = fund_client
         self._lock = threading.Lock()
         self._active_fetches: Set[str] = set()  # Track active fetch tasks
         self._fetch_status: Dict[str, Dict] = {}  # Track fetch progress
@@ -100,8 +102,9 @@ class LazyFetchManager:
                 self._update_fetch_status(fetch_key, "completed", 0, 0)
                 return
             
-            # Calculate chunks (3 days per chunk to avoid rate limiting)
-            chunks = self._create_chunks(missing_ranges, chunk_days=3)
+            # Calculate chunks (3 days per chunk for gold, 14 days for funds)
+            chunk_days = 3 if asset_type == "GOLD" else 14
+            chunks = self._create_chunks(missing_ranges, chunk_days=chunk_days, asset_type=asset_type)
             total_chunks = len(chunks)
             
             self._update_fetch_status(fetch_key, "running", total_chunks, 0)
@@ -111,14 +114,18 @@ class LazyFetchManager:
                 try:
                     logger.info(f"Fetching chunk {i+1}/{total_chunks} for {symbol}: {chunk_start} to {chunk_end}")
                     
-                    # Fetch data using gold client
+                    # Fetch data using appropriate client
                     if self.gold_client and asset_type == "GOLD":
                         new_records = self.gold_client._get_sjc_history(chunk_start, chunk_end)
+                    elif self.fund_client and asset_type == "FUND":
+                        new_records = self._fetch_fund_chunk(symbol, chunk_start, chunk_end)
+                    else:
+                        new_records = []
                         
-                        if new_records:
-                            # Store in database
-                            stored_count = self._store_records(symbol, asset_type, new_records)
-                            logger.info(f"Stored {stored_count} records for {symbol} chunk {i+1}")
+                    if new_records:
+                        # Store in database
+                        stored_count = self._store_records(symbol, asset_type, new_records)
+                        logger.info(f"Stored {stored_count} records for {symbol} chunk {i+1}")
                     
                     # Update progress
                     self._update_fetch_status(fetch_key, "running", total_chunks, i + 1)
@@ -232,8 +239,12 @@ class LazyFetchManager:
         ranges.append((start_date, prev_date))
         return ranges
     
-    def _create_chunks(self, ranges: List[tuple], chunk_days: int = 7) -> List[tuple]:
-        """Split date ranges into smaller chunks."""
+    def _create_chunks(self, ranges: List[tuple], chunk_days: int = 7, asset_type: str = "GOLD") -> List[tuple]:
+        """Split date ranges into smaller chunks with asset-specific sizing."""
+        # Use larger chunks for funds (14 days) vs gold (default 7 days)
+        if asset_type == "FUND":
+            chunk_days = 14
+        
         chunks = []
         
         for start_date, end_date in ranges:
@@ -247,6 +258,47 @@ class LazyFetchManager:
                 current_start = current_end + timedelta(days=1)
         
         return chunks
+    
+    def _fetch_fund_chunk(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
+        """Fetch fund NAV data for a specific chunk using fund client."""
+        try:
+            # Get fund ID
+            fund_id = self.fund_client._get_fund_id(symbol)
+            if not fund_id:
+                logger.warning(f"Fund ID not found for symbol: {symbol}")
+                return []
+            
+            # Fetch data using existing method
+            history_df = self.fund_client._fetch_fund_nav_history_from_provider(fund_id, start_date, end_date)
+            
+            if history_df is None or history_df.empty:
+                return []
+            
+            # Convert to standard format
+            records = []
+            for _, row in history_df.iterrows():
+                nav_value = row.get("nav_per_unit", 0.0)
+                nav = float(nav_value) if nav_value else 0.0
+                date_val = row.get("date")
+                date_str = date_val.strftime("%Y-%m-%d") if isinstance(date_val, pd.Timestamp) else str(date_val)
+                
+                records.append({
+                    "symbol": symbol,
+                    "date": date_str,
+                    "nav": nav,
+                    "open": nav,
+                    "high": nav,
+                    "low": nav,
+                    "close": nav,
+                    "adjclose": nav,
+                    "volume": 0.0
+                })
+            
+            return records
+            
+        except Exception as e:
+            logger.error(f"Error fetching fund chunk for {symbol} ({start_date} to {end_date}): {e}")
+            return []
     
     def _calculate_adaptive_delay(self) -> float:
         """Calculate adaptive delay based on recent API calls."""
