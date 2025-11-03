@@ -5,6 +5,8 @@ import logging
 import pandas as pd
 import time
 from requests.exceptions import Timeout, ConnectionError
+from vnstock.core.utils import client
+from vnstock.core.utils.user_agent import get_headers
 from app.cache import get_historical_cache, get_rate_limiter, get_ttl_manager
 from app.utils.provider_logger import log_provider_call
 
@@ -19,7 +21,11 @@ class FundClient:
         self._fund_api = self._initialize_fund_api()
         self.cache_manager = cache_manager
         self.memory_cache = memory_cache
-        
+
+        # Initialize API components for direct API calls
+        self.base_url = 'https://api.fmarket.vn/res/products'
+        self.headers = get_headers(data_source="fmarket", random_agent=False)
+
         # Smart caching components
         self.historical_cache = get_historical_cache()
         self.rate_limiter = get_rate_limiter()
@@ -60,10 +66,63 @@ class FundClient:
     @log_provider_call(provider_name="vnstock", metadata_fields={"count": lambda r: len(r) if r is not None else 0})
     def _fetch_funds_listing_from_provider(self) -> Optional[pd.DataFrame]:
         return self._fund_api.listing()
-    
-    @log_provider_call(provider_name="vnstock", metadata_fields={"fund_id": lambda r: f"id_{r}" if r is not None else None})
+
+    @log_provider_call(provider_name="vnstock", metadata_fields={"fund_id": lambda r: r.get("fund_id", 0)})
     def _fetch_fund_nav_report_from_provider(self, fund_id: int) -> Optional[pd.DataFrame]:
         return self._fund_api.nav_report(fund_id)
+
+    @log_provider_call(provider_name="vnstock", metadata_fields={"fund_id": lambda r: r.get("fund_id", 0), "rows": lambda r: len(r) if r is not None else 0})
+    def _fetch_fund_nav_history_from_provider(self, fund_id: int, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        """Fetch NAV history for a specific date range directly from FMarket API."""
+        # Convert date format from YYYY-MM-DD to YYYYMMDD
+        from_date = start_date.replace('-', '')
+        to_date = end_date.replace('-', '')
+
+        url = f"{self.base_url[:-1]}/get-nav-history"
+        payload = {
+            "isAllData": 0,  # Don't fetch all data, use date range
+            "productId": fund_id,
+            "fromDate": from_date,
+            "toDate": to_date,
+        }
+
+        try:
+            response_data = client.send_request(
+                url=url,
+                method="POST",
+                headers=self.headers,
+                payload=payload,
+                show_log=False
+            )
+
+            if response_data and response_data.get('data'):
+                # The API returns data as a list of records
+                df = pd.json_normalize(response_data, record_path=["data"])
+
+                if not df.empty:
+                    # Rename columns to match expected format
+                    column_mapping = {
+                        'navDate': 'date',
+                        'netAssetValue': 'nav_per_unit',
+                        'nav': 'nav_per_unit'  # Handle both 'nav' and 'netAssetValue' column names
+                    }
+
+                    # Apply renaming for existing columns
+                    existing_columns = {k: v for k, v in column_mapping.items() if k in df.columns}
+                    df = df.rename(columns=existing_columns)
+
+                    logger.info(f"Successfully fetched {len(df)} NAV records for fund {fund_id} from {start_date} to {end_date}")
+                    return df
+                else:
+                    logger.info(f"No NAV data returned for fund {fund_id} from {start_date} to {end_date}")
+            else:
+                logger.warning(f"Invalid or empty response from API for fund {fund_id}")
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error fetching NAV history for fund {fund_id} from {start_date} to {end_date}: {e}")
+            return None
     
     def _refresh_funds_cache(self, max_retries: int = 3):
         """Fetch fresh fund list from vnstock with retry logic."""
@@ -239,18 +298,18 @@ class FundClient:
                 if self.rate_limiter:
                     self.rate_limiter.wait_for_slot()
                 
-                logger.info(f"Fetching NAV history for {symbol} (attempt {attempt + 1}/{max_retries})...")
-                history_df = self._fetch_fund_nav_report_from_provider(fund_id)
-                
+                logger.info(f"Fetching NAV history for {symbol} from {start_date} to {end_date} (attempt {attempt + 1}/{max_retries})...")
+                history_df = self._fetch_fund_nav_history_from_provider(fund_id, start_date, end_date)
+
                 # Record API call for rate limiting
                 if self.rate_limiter:
                     self.rate_limiter.record_call('fund_nav_history')
-                
+
                 if history_df is None or history_df.empty:
                     return []
-                
+
+                # The data is already filtered by the API, but ensure date parsing
                 history_df['date'] = pd.to_datetime(history_df['date'])
-                history_df = history_df[(history_df['date'] >= start_date) & (history_df['date'] <= end_date)]
                 
                 history = []
                 for _, row in history_df.iterrows():

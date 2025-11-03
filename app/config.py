@@ -30,8 +30,8 @@ HISTORICAL_CACHE_CONFIG = {
 
 # Rate Limit Protection Configuration
 RATE_LIMIT_CONFIG = {
-    'max_calls_per_minute': 60,         # Maximum API calls per minute
-    'max_calls_per_hour': 500,          # Maximum API calls per hour
+    'max_calls_per_minute': 3600,         # Maximum API calls per minute
+    'max_calls_per_hour': 21600,          # Maximum API calls per hour
     'delay_between_calls_ms': 100,      # Minimum delay between calls (milliseconds)
     'queue_max_size': 100,              # Maximum queued requests
     'enable_throttling': True           # Enable rate limit protection
