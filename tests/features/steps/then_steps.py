@@ -12,7 +12,8 @@ def step_valid_quote(context):
 def step_quote_has_price(context):
     """Assert quote contains price information"""
     assert context.quote_response is not None, "Quote response should not be None"
-    data = context.quote_response.get("data")
+    # Handle both flat response and nested "data" field
+    data = context.quote_response.get("data") if "data" in context.quote_response else context.quote_response
     MarketDataAssertions.assert_price_information(data)
 
 
@@ -26,7 +27,8 @@ def step_valid_history(context):
 def step_history_multiple_days(context):
     """Assert history contains multiple trading days"""
     assert context.history_response is not None, "History response should not be None"
-    data = context.history_response.get("data")
+    # Handle both flat response and nested "data" field
+    data = context.history_response.get("data") if "data" in context.history_response else context.history_response
     if data is not None:
         MarketDataAssertions.assert_multiple_trading_days(data, min_days=100)
 
@@ -35,7 +37,7 @@ def step_history_multiple_days(context):
 def step_vnd_currency(context):
     """Assert data is in VND currency"""
     assert context.quote_response is not None, "Quote response should not be None"
-    data = context.quote_response.get("data")
+    data = context.quote_response.get("data") if "data" in context.quote_response else context.quote_response
     if data is not None:
         MarketDataAssertions.assert_vnd_currency(data)
 
@@ -50,7 +52,7 @@ def step_valid_nav(context):
 def step_nav_has_value(context):
     """Assert NAV contains net asset value"""
     assert context.quote_response is not None, "Quote response should not be None"
-    data = context.quote_response.get("data")
+    data = context.quote_response.get("data") if "data" in context.quote_response else context.quote_response
     MarketDataAssertions.assert_price_information(data)
 
 
@@ -64,7 +66,7 @@ def step_valid_nav_history(context):
 def step_daily_nav_values(context):
     """Assert history shows daily NAV values"""
     assert context.history_response is not None, "History response should not be None"
-    data = context.history_response.get("data")
+    data = context.history_response.get("data") if "data" in context.history_response else context.history_response
     if data is not None:
         MarketDataAssertions.assert_multiple_trading_days(data, min_days=100)
 
@@ -79,7 +81,7 @@ def step_valid_index(context):
 def step_index_has_points(context):
     """Assert index contains current points"""
     assert context.quote_response is not None, "Quote response should not be None"
-    data = context.quote_response.get("data")
+    data = context.quote_response.get("data") if "data" in context.quote_response else context.quote_response
     MarketDataAssertions.assert_price_information(data)
 
 
@@ -93,7 +95,7 @@ def step_valid_index_history(context):
 def step_market_trends(context):
     """Assert history shows market trends"""
     assert context.history_response is not None, "History response should not be None"
-    data = context.history_response.get("data")
+    data = context.history_response.get("data") if "data" in context.history_response else context.history_response
     if data is not None:
         MarketDataAssertions.assert_multiple_trading_days(data, min_days=100)
 
@@ -108,7 +110,7 @@ def step_valid_gold_price(context):
 def step_gold_price_vnd(context):
     """Assert gold price is in VND per tael"""
     assert context.quote_response is not None, "Quote response should not be None"
-    data = context.quote_response.get("data")
+    data = context.quote_response.get("data") if "data" in context.quote_response else context.quote_response
     if data is not None:
         MarketDataAssertions.assert_price_information(data)
         MarketDataAssertions.assert_vnd_currency(data)
@@ -124,7 +126,7 @@ def step_valid_gold_history(context):
 def step_gold_price_fluctuations(context):
     """Assert gold history shows price fluctuations"""
     assert context.history_response is not None, "History response should not be None"
-    data = context.history_response.get("data")
+    data = context.history_response.get("data") if "data" in context.history_response else context.history_response
     if data is not None:
         MarketDataAssertions.assert_multiple_trading_days(data, min_days=100)
 
@@ -138,9 +140,42 @@ def step_valid_asset_data(context, asset_type):
 @then('the data should not be empty')
 def step_data_not_empty(context):
     """Assert data is not empty"""
-    assert context.quote_response is not None, "Quote response should not be None"
-    data = context.quote_response.get("data")
+    assert context.history_response is not None, "History response should not be None"
+    # Handle both flat response and nested "data" field
+    data = context.history_response.get("data") if "data" in context.history_response else context.history_response
     MarketDataAssertions.assert_non_empty_data(data)
+
+
+@then('the symbol should not be empty')
+def step_symbol_not_empty(context):
+    """Assert the selected symbol is not empty"""
+    assert hasattr(context, 'selected_symbol'), "Symbol should have been selected"
+    assert context.selected_symbol is not None, "Symbol should not be None"
+    assert context.selected_symbol != "", "Symbol should not be empty"
+
+
+@then('I should receive valid latest data for the selected symbol')
+def step_valid_latest_data(context):
+    """Assert latest data response is valid"""
+    assert hasattr(context, 'quote_response'), "Quote response should exist"
+    MarketDataAssertions.assert_valid_quote_response(context.quote_response)
+
+
+@then('the data should contain relevant information')
+def step_data_contains_relevant_info(context):
+    """Assert data contains relevant information"""
+    assert hasattr(context, 'quote_response'), "Quote response should exist"
+    assert context.quote_response is not None, "Quote response should not be None"
+    # Handle both flat response and nested "data" field
+    data = context.quote_response.get("data") if "data" in context.quote_response else context.quote_response
+    MarketDataAssertions.assert_non_empty_data(data)
+
+
+@then('I should receive valid historical data for the selected symbol')
+def step_valid_historical_data(context):
+    """Assert historical data response is valid"""
+    assert hasattr(context, 'history_response'), "History response should exist"
+    MarketDataAssertions.assert_valid_history_response(context.history_response)
 
 
 @then('I should receive a 404 error')

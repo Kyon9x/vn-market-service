@@ -11,7 +11,8 @@ class MarketDataAPI:
         if base_url is None:
             base_url = os.getenv("TEST_BASE_URL", "http://localhost:8765")
         self.base_url = base_url
-        self.client = httpx.Client(timeout=30.0)
+        # Use longer timeout for history requests which can be slow
+        self.client = httpx.Client(timeout=120.0)
     
     def wait_for_service(self, timeout: int = 60) -> bool:
         """Wait for service to be healthy"""

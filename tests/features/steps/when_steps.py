@@ -12,16 +12,26 @@ def step_select_first_result(context):
     context.selected_symbol = context.search_results["results"][0]["symbol"]
 
 
+@when('I select the first search result to get the symbol')
+def step_select_first_result_to_get_symbol(context):
+    """Select the first result from search and extract symbol"""
+    assert context.search_results is not None, "Search results should not be None"
+    assert "results" in context.search_results, "Search results should contain 'results' field"
+    assert len(context.search_results["results"]) > 0, "Search results should not be empty"
+    
+    context.selected_symbol = context.search_results["results"][0]["symbol"]
+
+
 @when('I request the latest quote for that symbol')
 def step_request_quote(context):
     """Request latest quote for selected symbol"""
     context.quote_response = context.api.get_quote(context.selected_symbol)
 
 
-@when('I request historical data for the past 365 days')
+@when('I request historical data for the past x days')
 def step_request_history(context):
     """Request historical data for selected symbol"""
-    context.history_response = context.api.get_history(context.selected_symbol, days=365)
+    context.history_response = context.api.get_history(context.selected_symbol, days=context.history_days)
 
 
 @when('I request the latest NAV for that fund')
@@ -126,3 +136,21 @@ def step_call_history_endpoint(context):
 def step_request_market_data(context):
     """Request market data with unavailable symbol"""
     context.quote_response = context.api.get_quote(context.unavailable_symbol)
+
+
+@when('I request the latest data for that symbol')
+def step_request_latest_data_for_symbol(context):
+    """Request latest data for the selected symbol"""
+    context.quote_response = context.api.get_quote(context.selected_symbol)
+
+
+@when('I request the historical data for the past 365 days for that symbol')
+def step_request_historical_data_for_symbol(context):
+    """Request historical data for the past 365 days for the selected symbol"""
+    context.history_response = context.api.get_history(context.selected_symbol, days=365)
+
+
+@when('I request the historical data for the past {days:d} days for that symbol')
+def step_request_historical_data_with_days(context, days):
+    """Request historical data for specified number of days for the selected symbol"""
+    context.history_response = context.api.get_history(context.selected_symbol, days=days)

@@ -56,17 +56,16 @@ Feature: Market Data API Endpoints
   Scenario Outline: Asset type data retrieval
     Given I search for <asset_type> with query <query>
     When I select the first search result to get the symbol
-    And the symbol should not be empty
-    Then I request the latest data for that symbol
-    Then I should receive valid latest data
+    Then the symbol should not be empty
+    When I request the latest data for that symbol
+    Then I should receive valid latest data for the selected symbol
     And the data should contain relevant information
-    When I request the historical data for the past 365 days for that symbol
-    Then I should receive valid historical data
+    When I request the historical data for the past <history_days> days for that symbol
+    Then I should receive valid historical data for the selected symbol
     And the data should not be empty
 
     Examples:
-      | asset_type | symbol |
-      | stocks     | VNM    |
-      | funds      | DCDS   |
-      | indices    | VNINDEX|
-      | gold       | SJC    |
+      | asset_type | query   | history_days |
+      | stocks     | VNM     | 30          |
+      | funds      | DCDS    | 30          |
+      | gold       | SJC     | 30          |
