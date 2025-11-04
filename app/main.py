@@ -339,6 +339,41 @@ async def get_timeout_config():
         "timestamp": datetime.now().isoformat()
     }
 
+@app.get("/debug/date-check")
+async def debug_date_check(end_date: str = Query(..., description="End date to check")):
+    """Debug endpoint to check date comparison logic."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    should_include_today = (end_date == today or end_date >= today)
+
+    return {
+        "today": today,
+        "end_date": end_date,
+        "should_include_today": should_include_today,
+        "comparison": f"{end_date} == {today} = {end_date == today}, {end_date} >= {today} = {end_date >= today}"
+    }
+
+@app.get("/debug/stock-client")
+async def debug_stock_client():
+    """Debug endpoint to check if stock_client is available and working."""
+    if stock_client is None:
+        return {"stock_client": "None", "available": False}
+
+    try:
+        # Try to get a quote for TCX
+        quote = stock_client.get_latest_quote("TCX")
+        return {
+            "stock_client": "Available",
+            "available": True,
+            "tcx_quote": quote,
+            "quote_date": quote.get("date") if quote else None
+        }
+    except Exception as e:
+        return {
+            "stock_client": "Available",
+            "available": True,
+            "error": str(e)
+        }
+
 @app.get("/funds", response_model=FundListResponse)
 async def get_funds_list():
     try:
@@ -819,17 +854,21 @@ async def get_history(
 ):
     try:
         symbol = symbol.upper()
+        logger.info(f"DEBUG: History request for {symbol}, raw params: start_date={start_date}, end_date={end_date}")
         start_date, end_date = validate_and_set_dates(start_date, end_date)
+        logger.info(f"DEBUG: After validation: start_date={start_date}, end_date={end_date}")
 
         # Detect asset type and route to appropriate endpoint
         asset_type = AssetTypeDetector.detect_asset_type(symbol, {
             'fund_client': fund_client,
             'gold_client': gold_client
         })
+        logger.info(f"DEBUG: Detected asset type: {asset_type}")
 
         # Check if we should include today's latest quote
         today = datetime.now().strftime("%Y-%m-%d")
         should_include_today = (end_date == today or end_date >= today)
+        logger.info(f"DEBUG: Today's date: {today}, should_include_today: {should_include_today}")
 
         if asset_type == ASSET_TYPE_GOLD:
             history = gold_client.get_gold_history(symbol, start_date, end_date)
@@ -910,11 +949,18 @@ async def get_history(
 
         # Check if we need to include today's latest quote for stock
         if should_include_today and stock_client:
+            logger.info(f"DEBUG: Checking if we should include today's quote for {symbol}: should_include_today={should_include_today}, today={today}")
             try:
                 latest_quote = stock_client.get_latest_quote(symbol)
+                logger.info(f"DEBUG: Latest quote for {symbol}: {latest_quote}")
+
                 if latest_quote and latest_quote.get('date') == today:
+                    logger.info(f"DEBUG: Latest quote date matches today: {latest_quote.get('date')} == {today}")
+
                     # Check if today's data is already in history
                     has_today = any(record.get('date') == today for record in history_data)
+                    logger.info(f"DEBUG: Has today in history: {has_today}, history_dates: {[r.get('date') for r in history_data]}")
+
                     if not has_today:
                         # Convert latest quote to history format
                         history_record = {
@@ -928,12 +974,19 @@ async def get_history(
                             "adjclose": latest_quote.get('adjclose'),
                             "volume": latest_quote.get('volume')
                         }
+                        logger.info(f"DEBUG: Adding history record: {history_record}")
                         history_data.append(history_record)
                         # Sort by date
                         history_data.sort(key=lambda x: x.get('date', ''), reverse=False)
-                        logger.debug(f"Included today's latest quote for {symbol} in history")
+                        logger.info(f"DEBUG: Successfully included today's latest quote for {symbol} in history")
+                    else:
+                        logger.info(f"DEBUG: Today's data already exists in history for {symbol}")
+                else:
+                    logger.info(f"DEBUG: Latest quote date doesn't match today or quote is None: date={latest_quote.get('date') if latest_quote else None}, today={today}")
             except Exception as e:
-                logger.debug(f"Could not include today's quote for {symbol}: {e}")
+                logger.error(f"DEBUG: Could not include today's quote for {symbol}: {e}")
+                import traceback
+                logger.error(f"DEBUG: Traceback: {traceback.format_exc()}")
 
         return ResponseValidator.enrich_response_with_classification({
             "symbol": result.symbol,
@@ -971,6 +1024,7 @@ async def get_quote(symbol: str):
     """
     try:
         symbol = symbol.upper()
+        logger.info(f"DEBUG: Quote request for {symbol}")
 
         # Detect asset type and route to appropriate endpoint
         asset_type = AssetTypeDetector.detect_asset_type(symbol, {
@@ -1005,6 +1059,7 @@ async def get_quote(symbol: str):
 
         # Default to stock
         result = await get_stock_quote(symbol)
+        logger.info(f"DEBUG: Quote endpoint returning for stock: {result.dict()}")
         return ResponseValidator.enrich_response_with_classification({
             **result.dict(),
             "asset_type": ASSET_TYPE_STOCK
