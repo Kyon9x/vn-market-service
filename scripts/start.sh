@@ -3,7 +3,7 @@
 # VN Market Service Startup Script
 # This script starts the VN Market Service on port 8765
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../"
 
 # Check if service is already running
 if lsof -i :8765 >/dev/null 2>&1; then
