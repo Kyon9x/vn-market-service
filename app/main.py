@@ -10,7 +10,8 @@ if sys.version_info < (3, 9):
 # Configure vnstock timeout before importing clients
 from app import vnstock_config
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.models import (
 FundListResponse,
@@ -33,13 +34,14 @@ from app.clients.fund_client import FundClient
 from app.clients.stock_client import StockClient
 from app.clients.index_client import IndexClient
 from app.clients.gold_client import GoldClient
-from app.config import HOST, PORT, CORS_ORIGINS
+from app.config import HOST, PORT, CORS_ORIGINS, IP_RATE_LIMIT_CONFIG, RATE_LIMIT_CONFIG, TIMEOUT_CONFIG
 from app.cache.cache_manager import CacheManager
 from app.cache.memory_cache import quote_cache, search_cache, cleanup_expired_caches, get_cache_stats
 from app.cache.search_optimizer import get_search_optimizer
 from app.cache.background_manager import start_cache_background_tasks, stop_cache_background_tasks
 from app.cache.data_seeder import get_data_seeder
 from app.cache.gold_static_seeder import get_gold_seeder
+from app.cache.ip_rate_limiter import IPRateLimiter
 from app.utils.date_utils import validate_and_set_dates
 from app.utils.response_validator import ResponseValidator
 from app.utils.asset_type_detector import AssetTypeDetector
@@ -53,6 +55,8 @@ from app.constants import (
 import logging
 from datetime import datetime, timedelta
 import asyncio
+import ipaddress
+from asyncio import wait_for, TimeoutError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +66,24 @@ logger = logging.getLogger(__name__)
 
 
 # Validation functions are now centralized in app.utils.response_validator
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP, handling proxies and forwarded headers."""
+    # Check X-Forwarded-For (most common proxy header)
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    if x_forwarded_for:
+        # Take first IP in chain (original client)
+        client_ip = x_forwarded_for.split(",")[0].strip()
+    else:
+        # Fallback to direct connection
+        client_ip = request.client.host if request.client else "0.0.0.0"
+
+    # Validate IP format
+    try:
+        ipaddress.ip_address(client_ip)
+        return client_ip
+    except ValueError:
+        return "0.0.0.0"  # Invalid IP fallback
 
 app = FastAPI(
     title="Vietnamese Market Data Service",
@@ -77,8 +99,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def timeout_middleware(request: Request, call_next):
+    """Apply request timeout to all endpoints."""
+    if not TIMEOUT_CONFIG['enable_timeout']:
+        return await call_next(request)
+
+    timeout_seconds = TIMEOUT_CONFIG['request_timeout_seconds']
+
+    try:
+        # Use asyncio.wait_for to enforce timeout
+        return await wait_for(call_next(request), timeout=timeout_seconds)
+    except TimeoutError:
+        logger.warning(f"Request timeout after {timeout_seconds}s: {request.method} {request.url}")
+        return JSONResponse(
+            status_code=408,  # Request Timeout
+            content={
+                "error": "Request Timeout",
+                "message": f"Request processing exceeded {timeout_seconds} second timeout limit",
+                "timeout_seconds": timeout_seconds
+            }
+        )
+
+@app.middleware("http")
+async def ip_rate_limit_middleware(request: Request, call_next):
+    """Apply per-IP rate limiting to all requests."""
+    client_ip = get_client_ip(request)
+
+    if ip_rate_limiter.check_ip_rate_limit(client_ip):
+        # Record the call for this IP
+        ip_rate_limiter.record_ip_call(client_ip)
+        response = await call_next(request)
+        return response
+    else:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "Rate limit exceeded for your IP address",
+                "message": f"Too many requests from {client_ip}. Please try again later.",
+                "retry_after": 60  # Suggest retry after 1 minute
+            }
+        )
+
 # Initialize cache manager and clients
 cache_manager = CacheManager()
+
+# Initialize global rate limiter with configuration
+from app.cache import get_rate_limiter
+global_rate_limiter = get_rate_limiter(RATE_LIMIT_CONFIG)
+
+# Initialize IP-based rate limiter (wraps the global rate limiter used by clients)
+ip_rate_limiter = IPRateLimiter(global_rate_limiter, IP_RATE_LIMIT_CONFIG)
 
 # Initialize clients with error handling
 try:
@@ -226,6 +297,47 @@ async def seed_gold_historical():
     except Exception as e:
         logger.error(f"Error during gold seeding: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/cache/ip-rate-limits")
+async def get_ip_rate_limit_stats():
+    """Get per-IP rate limiting statistics for monitoring."""
+    try:
+        stats = ip_rate_limiter.get_stats_summary()
+        return {
+            "ip_rate_limiting": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting IP rate limit stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/cache/ip-rate-limits/{client_ip}")
+async def get_ip_specific_stats(client_ip: str):
+    """Get rate limiting statistics for a specific IP address."""
+    try:
+        stats = ip_rate_limiter.get_ip_stats(client_ip)
+        if stats is None:
+            return {
+                "message": f"No statistics found for IP {client_ip}",
+                "tracked": False
+            }
+
+        return {
+            "ip": client_ip,
+            "stats": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting IP-specific stats for {client_ip}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/config/timeout")
+async def get_timeout_config():
+    """Get current timeout configuration."""
+    return {
+        "timeout_config": TIMEOUT_CONFIG,
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.get("/funds", response_model=FundListResponse)
 async def get_funds_list():

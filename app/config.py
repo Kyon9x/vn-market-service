@@ -30,8 +30,8 @@ HISTORICAL_CACHE_CONFIG = {
 
 # Rate Limit Protection Configuration
 RATE_LIMIT_CONFIG = {
-    'max_calls_per_minute': 3600,         # Maximum API calls per minute
-    'max_calls_per_hour': 21600,          # Maximum API calls per hour
+    'max_calls_per_minute': 6000,         # Maximum API calls per minute
+    'max_calls_per_hour': 36000,          # Maximum API calls per hour
     'delay_between_calls_ms': 100,      # Minimum delay between calls (milliseconds)
     'queue_max_size': 100,              # Maximum queued requests
     'enable_throttling': True           # Enable rate limit protection
@@ -42,6 +42,22 @@ DATABASE_CONFIG = {
     'path': os.getenv('VN_MARKET_DB_PATH', 'db/assets.db'),
     'backup_enabled': True,
     'backup_interval_hours': 24
+}
+
+# IP-Based Rate Limit Configuration
+IP_RATE_LIMIT_CONFIG = {
+    'max_calls_per_minute': 60,          # Maximum API calls per minute per IP
+    'max_calls_per_hour': 600,           # Maximum API calls per hour per IP
+    'delay_between_calls_ms': 200,       # Minimum delay between calls per IP (milliseconds)
+    'enable_throttling': True,           # Enable IP-based rate limiting
+    'max_tracked_ips': 10000,            # Maximum number of IPs to track (memory protection)
+    'cleanup_interval_seconds': 300      # Cleanup inactive IPs every 5 minutes
+}
+
+# Request Timeout Configuration
+TIMEOUT_CONFIG = {
+    'request_timeout_seconds': 30,       # Maximum time for request processing
+    'enable_timeout': True               # Enable request timeout protection
 }
 
 # Background Tasks Configuration
