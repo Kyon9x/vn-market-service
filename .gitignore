@@ -32,3 +32,4 @@ Thumbs.db
 .env.local
 
 tests/reports/
+tests/pretty.output

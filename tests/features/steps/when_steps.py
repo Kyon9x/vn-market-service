@@ -8,8 +8,9 @@ def step_select_first_result(context):
     assert context.search_results is not None, "Search results should not be None"
     assert "results" in context.search_results, "Search results should contain 'results' field"
     assert len(context.search_results["results"]) > 0, "Search results should not be empty"
-    
+
     context.selected_symbol = context.search_results["results"][0]["symbol"]
+    print(f"🐛 TEST LOG: Selected symbol: {context.selected_symbol}")
 
 
 @when('I select the first search result to get the symbol')
@@ -26,12 +27,24 @@ def step_select_first_result_to_get_symbol(context):
 def step_request_quote(context):
     """Request latest quote for selected symbol"""
     context.quote_response = context.api.get_quote(context.selected_symbol)
+    if context.quote_response and "close" in context.quote_response:
+        print(f"🐛 TEST LOG: Quote close value: {context.quote_response['close']}")
+    else:
+        print(f"🐛 TEST LOG: Quote response: {context.quote_response}")
 
 
 @when('I request historical data for the past x days')
 def step_request_history(context):
     """Request historical data for selected symbol"""
     context.history_response = context.api.get_history(context.selected_symbol, days=context.history_days)
+    if context.history_response and "history" in context.history_response and context.history_response["history"]:
+        latest_record = context.history_response["history"][-1]  # Most recent
+        if "close" in latest_record:
+            print(f"🐛 TEST LOG: History latest close value: {latest_record['close']}")
+        else:
+            print(f"🐛 TEST LOG: History latest record: {latest_record}")
+    else:
+        print(f"🐛 TEST LOG: History response: {context.history_response}")
 
 
 @when('I request the latest NAV for that fund')
@@ -44,6 +57,14 @@ def step_request_nav(context):
 def step_request_fund_history(context):
     """Request historical NAV data for selected fund"""
     context.history_response = context.api.get_history(context.selected_symbol, days=365)
+    if context.history_response and "history" in context.history_response and context.history_response["history"]:
+        latest_record = context.history_response["history"][-1]  # Most recent
+        if "close" in latest_record:
+            print(f"🐛 TEST LOG: Fund history latest close value: {latest_record['close']}")
+        else:
+            print(f"🐛 TEST LOG: Fund history latest record: {latest_record}")
+    else:
+        print(f"🐛 TEST LOG: Fund history response: {context.history_response}")
 
 
 @when('I select VNINDEX from the results')
@@ -73,6 +94,14 @@ def step_request_index_quote(context):
 def step_request_index_history(context):
     """Request historical index data"""
     context.history_response = context.api.get_history(context.selected_symbol, days=365)
+    if context.history_response and "history" in context.history_response and context.history_response["history"]:
+        latest_record = context.history_response["history"][-1]  # Most recent
+        if "close" in latest_record:
+            print(f"🐛 TEST LOG: Index history latest close value: {latest_record['close']}")
+        else:
+            print(f"🐛 TEST LOG: Index history latest record: {latest_record}")
+    else:
+        print(f"🐛 TEST LOG: Index history response: {context.history_response}")
 
 
 @when('I select SJC gold from the results')
@@ -102,6 +131,14 @@ def step_request_gold_quote(context):
 def step_request_gold_history(context):
     """Request historical gold prices"""
     context.history_response = context.api.get_history(context.selected_symbol, days=365)
+    if context.history_response and "history" in context.history_response and context.history_response["history"]:
+        latest_record = context.history_response["history"][-1]  # Most recent
+        if "close" in latest_record:
+            print(f"🐛 TEST LOG: Gold history latest close value: {latest_record['close']}")
+        else:
+            print(f"🐛 TEST LOG: Gold history latest record: {latest_record}")
+    else:
+        print(f"🐛 TEST LOG: Gold history response: {context.history_response}")
 
 
 @when('I request the latest quote')
@@ -148,9 +185,25 @@ def step_request_latest_data_for_symbol(context):
 def step_request_historical_data_for_symbol(context):
     """Request historical data for the past 365 days for the selected symbol"""
     context.history_response = context.api.get_history(context.selected_symbol, days=365)
+    if context.history_response and "history" in context.history_response and context.history_response["history"]:
+        latest_record = context.history_response["history"][-1]  # Most recent
+        if "close" in latest_record:
+            print(f"🐛 TEST LOG: Regression history latest close value: {latest_record['close']}")
+        else:
+            print(f"🐛 TEST LOG: Regression history latest record: {latest_record}")
+    else:
+        print(f"🐛 TEST LOG: Regression history response: {context.history_response}")
 
 
 @when('I request the historical data for the past {days:d} days for that symbol')
 def step_request_historical_data_with_days(context, days):
     """Request historical data for specified number of days for the selected symbol"""
     context.history_response = context.api.get_history(context.selected_symbol, days=days)
+    if context.history_response and "history" in context.history_response and context.history_response["history"]:
+        latest_record = context.history_response["history"][-1]  # Most recent
+        if "close" in latest_record:
+            print(f"🐛 TEST LOG: Custom days ({days}) history latest close value: {latest_record['close']}")
+        else:
+            print(f"🐛 TEST LOG: Custom days ({days}) history latest record: {latest_record}")
+    else:
+        print(f"🐛 TEST LOG: Custom days ({days}) history response: {context.history_response}")

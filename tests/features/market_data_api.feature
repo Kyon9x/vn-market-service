@@ -53,19 +53,37 @@ Feature: Market Data API Endpoints
     And the history should show price fluctuations
 
   @regression
-  Scenario Outline: Asset type data retrieval
-    Given I search for <asset_type> with query <query>
+  Scenario: Asset type data retrieval with random data
+    Given I search for stocks with random query
     When I select the first search result to get the symbol
     Then the symbol should not be empty
     When I request the latest data for that symbol
     Then I should receive valid latest data for the selected symbol
     And the data should contain relevant information
-    When I request the historical data for the past <history_days> days for that symbol
+    When I request the historical data for the past 30 days for that symbol
     Then I should receive valid historical data for the selected symbol
     And the data should not be empty
 
-    Examples:
-      | asset_type | query   | history_days |
-      | stocks     | Vina    | 30           |
-      | funds      | DCD    | 30           |
-      | gold       | VN GOLD | 30           |
+  @regression
+  Scenario: Fund data retrieval with random data
+    Given I search for funds with random query
+    When I select the first search result to get the symbol
+    Then the symbol should not be empty
+    When I request the latest data for that symbol
+    Then I should receive valid latest data for the selected symbol
+    And the data should contain relevant information
+    When I request the historical data for the past 30 days for that symbol
+    Then I should receive valid historical data for the selected symbol
+    And the data should not be empty
+
+  @regression
+  Scenario: Gold data retrieval with random data
+    Given I search for gold with random query
+    When I select the first search result to get the symbol
+    Then the symbol should not be empty
+    When I request the latest data for that symbol
+    Then I should receive valid latest data for the selected symbol
+    And the data should contain relevant information
+    When I request the historical data for the past 30 days for that symbol
+    Then I should receive valid historical data for the selected symbol
+    And the data should not be empty

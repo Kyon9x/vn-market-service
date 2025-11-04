@@ -20,25 +20,36 @@ class IndexClient:
     
     @log_provider_call(provider_name="vnstock", metadata_fields={"symbol": lambda r: r[0].get("symbol") if r else None})
     def _fetch_index_history_from_provider(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
-        quote = Quote(symbol=symbol, source='VCI')
-        return quote.history(start=start_date, end=end_date)
+        try:
+            quote = Quote(symbol=symbol, source='VCI')
+            return quote.history(start=start_date, end=end_date)
+        except ValueError as e:
+            # vnstock may throw ValueError for certain date ranges or symbols
+            logger.warning(f"vnstock ValueError for {symbol} {start_date} to {end_date}: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Unexpected error fetching index data for {symbol}: {e}")
+            return None
     
     @log_provider_call(provider_name="vnstock", metadata_fields={"symbol": lambda r: r.get("symbol") if isinstance(r, dict) else None})
     def _fetch_latest_index_quote_from_provider(self, symbol: str) -> Optional[pd.DataFrame]:
-        quote = Quote(symbol=symbol, source='VCI')
-        today = datetime.now().strftime("%Y-%m-%d")
-        return quote.history(start=today, end=today)
+        try:
+            quote = Quote(symbol=symbol, source='VCI')
+            today = datetime.now().strftime("%Y-%m-%d")
+            return quote.history(start=today, end=today)
+        except ValueError as e:
+            # vnstock may throw ValueError for certain symbols
+            logger.warning(f"vnstock ValueError for latest {symbol}: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Unexpected error fetching latest index data for {symbol}: {e}")
+            return None
     
     def get_index_history(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
-        """Fetch index history with incremental caching support."""
-        # Try incremental caching first
-        if self.historical_cache:
-            try:
-                return self._get_index_history_incremental(symbol, start_date, end_date)
-            except Exception as e:
-                logger.warning(f"Incremental caching failed for {symbol}, falling back to full fetch: {e}")
-        
-        # Fallback to full fetch
+        """Fetch index history with optimized fetching for vnstock (supports long ranges)."""
+        # For indices, vnstock supports long date ranges, so fetch full range directly
+        # instead of using incremental caching which may chunk unnecessarily
+        logger.info(f"Fetching full index history range for {symbol}: {start_date} to {end_date}")
         return self._fetch_index_history_raw(symbol, start_date, end_date)
     
     def _get_index_history_incremental(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:

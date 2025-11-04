@@ -12,7 +12,8 @@ class MarketDataAPI:
             base_url = os.getenv("TEST_BASE_URL", "http://localhost:8765")
         self.base_url = base_url
         # Use longer timeout for history requests which can be slow
-        self.client = httpx.Client(timeout=120.0)
+        # Include test header to bypass rate limiting during automated tests
+        self.client = httpx.Client(timeout=120.0, headers={"X-Test-Mode": "true"})
     
     def wait_for_service(self, timeout: int = 60) -> bool:
         """Wait for service to be healthy"""

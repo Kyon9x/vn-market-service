@@ -54,6 +54,23 @@ def step_search_asset_type(context, asset_type, query):
     context.search_results = context.api.search(query)
 
 
+@given('I search for {asset_type} with random query')
+def step_search_asset_type_random(context, asset_type):
+    """Search for specific asset type with random query"""
+    if asset_type.lower() == "stocks":
+        context.search_query = TestDataGenerator.get_random_stock_symbol()
+    elif asset_type.lower() == "funds":
+        context.search_query = TestDataGenerator.get_random_fund_symbol()
+    elif asset_type.lower() == "gold":
+        context.search_query = TestDataGenerator.get_random_gold_symbol()
+    else:
+        raise ValueError(f"Unknown asset type for random query: {asset_type}")
+
+    context.asset_type = asset_type
+    print(f"🐛 TEST LOG: Searching for {asset_type} with query: {context.search_query}")
+    context.search_results = context.api.search(context.search_query)
+
+
 @given('I request data for an invalid symbol')
 def step_invalid_symbol(context):
     """Set up invalid symbol for testing"""

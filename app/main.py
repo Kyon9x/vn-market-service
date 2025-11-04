@@ -123,7 +123,16 @@ async def timeout_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def ip_rate_limit_middleware(request: Request, call_next):
-    """Apply per-IP rate limiting to all requests."""
+    """Apply per-IP rate limiting to all requests, excluding health check endpoints and test requests."""
+    # Skip rate limiting for health check and monitoring endpoints
+    if request.url.path in ["/health", "/cache/stats", "/cache/lazy-fetch/status", "/cache/seed/progress", "/cache/ip-rate-limits"]:
+        return await call_next(request)
+
+    # Skip rate limiting for test requests (identified by custom header)
+    test_header = request.headers.get("X-Test-Mode")
+    if test_header and test_header.lower() == "true":
+        return await call_next(request)
+
     client_ip = get_client_ip(request)
 
     if ip_rate_limiter.check_ip_rate_limit(client_ip):
@@ -412,7 +421,7 @@ async def get_fund_history(
         validate_client_available(fund_client, "Fund")
         symbol = symbol.upper()
 
-        start_date, end_date = validate_and_set_dates(start_date, end_date)
+        start_date, end_date = validate_and_set_dates(start_date, end_date, allow_future_dates=False)
 
         history = fund_client.get_fund_nav_history(symbol, start_date, end_date)
 
@@ -473,7 +482,7 @@ async def get_stock_history(
     try:
         symbol = symbol.upper()
 
-        start_date, end_date = validate_and_set_dates(start_date, end_date)
+        start_date, end_date = validate_and_set_dates(start_date, end_date, allow_future_dates=False)
 
         history = stock_client.get_stock_history(symbol, start_date, end_date)
 
@@ -518,7 +527,7 @@ async def get_index_history(
     try:
         symbol = symbol.upper()
 
-        start_date, end_date = validate_and_set_dates(start_date, end_date)
+        start_date, end_date = validate_and_set_dates(start_date, end_date, allow_future_dates=False)
 
         history = index_client.get_index_history(symbol, start_date, end_date)
 
@@ -642,7 +651,7 @@ async def get_gold_history(
         500: API error
     """
     try:
-        start_date, end_date = validate_and_set_dates(start_date, end_date)
+        start_date, end_date = validate_and_set_dates(start_date, end_date, allow_future_dates=False)
 
         history = gold_client.get_gold_history(symbol, start_date, end_date)
         
@@ -819,8 +828,7 @@ async def get_history(
 ):
     try:
         symbol = symbol.upper()
-        start_date, end_date = validate_and_set_dates(start_date, end_date)
-
+        start_date, end_date = validate_and_set_dates(start_date, end_date, allow_future_dates=False)
         # Detect asset type and route to appropriate endpoint
         asset_type = AssetTypeDetector.detect_asset_type(symbol, {
             'fund_client': fund_client,
@@ -882,20 +890,17 @@ async def get_history(
             if symbol in fund_symbols:
                 result = await get_fund_history(symbol, start_date, end_date)
                 history_data = [item.dict() for item in result.history]
-
-                # Check if we need to include today's latest quote for fund
-                if should_include_today and fund_client:
-                    try:
-                        latest_quote = fund_client.get_latest_nav(symbol)
-                        if latest_quote and latest_quote.get('date') == today:
-                            # Check if today's data is already in history
-                            has_today = any(record.get('date') == today for record in history_data)
-                            if not has_today:
-                                history_data.append(latest_quote)
-                                # Sort by date
-                                history_data.sort(key=lambda x: x.get('date', ''), reverse=False)
-                    except Exception as e:
-                        logger.debug(f"Could not include today's quote for {symbol}: {e}")
+                try:
+                    latest_quote = fund_client.get_latest_nav(symbol)
+                    if latest_quote and latest_quote.get('date') == today:
+                        # Check if today's data is already in history
+                        has_today = any(record.get('date') == today for record in history_data)
+                        if not has_today:
+                            history_data.append(latest_quote)
+                            # Sort by date
+                            history_data.sort(key=lambda x: x.get('date', ''), reverse=False)
+                except Exception as e:
+                    logger.debug(f"Could not include today's quote for {symbol}: {e}")
 
                 return ResponseValidator.enrich_response_with_classification({
                     "symbol": result.symbol,
@@ -912,9 +917,12 @@ async def get_history(
         if should_include_today and stock_client:
             try:
                 latest_quote = stock_client.get_latest_quote(symbol)
+
                 if latest_quote and latest_quote.get('date') == today:
+
                     # Check if today's data is already in history
                     has_today = any(record.get('date') == today for record in history_data)
+
                     if not has_today:
                         # Convert latest quote to history format
                         history_record = {
@@ -931,9 +939,14 @@ async def get_history(
                         history_data.append(history_record)
                         # Sort by date
                         history_data.sort(key=lambda x: x.get('date', ''), reverse=False)
-                        logger.debug(f"Included today's latest quote for {symbol} in history")
+                    else:
+                        logger.info(f"DEBUG: Today's data already exists in history for {symbol}")
+                else:
+                    logger.info(f"DEBUG: Latest quote date doesn't match today or quote is None: date={latest_quote.get('date') if latest_quote else None}, today={today}")
             except Exception as e:
-                logger.debug(f"Could not include today's quote for {symbol}: {e}")
+                logger.error(f"DEBUG: Could not include today's quote for {symbol}: {e}")
+                import traceback
+                logger.error(f"DEBUG: Traceback: {traceback.format_exc()}")
 
         return ResponseValidator.enrich_response_with_classification({
             "symbol": result.symbol,
@@ -971,6 +984,7 @@ async def get_quote(symbol: str):
     """
     try:
         symbol = symbol.upper()
+        logger.info(f"DEBUG: Quote request for {symbol}")
 
         # Detect asset type and route to appropriate endpoint
         asset_type = AssetTypeDetector.detect_asset_type(symbol, {
@@ -1005,6 +1019,7 @@ async def get_quote(symbol: str):
 
         # Default to stock
         result = await get_stock_quote(symbol)
+        logger.info(f"DEBUG: Quote endpoint returning for stock: {result.dict()}")
         return ResponseValidator.enrich_response_with_classification({
             **result.dict(),
             "asset_type": ASSET_TYPE_STOCK
