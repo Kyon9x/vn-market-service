@@ -8,4 +8,4 @@ python-dateutil==2.8.2
 behave>=1.2.6
 httpx>=0.24.0
 pytest>=7.4.0
-behave-html-formatter==0.1.0 # Added for HTML reports
+behave-html-formatter==0.9.10 # Added for HTML reports

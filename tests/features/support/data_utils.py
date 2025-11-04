@@ -8,7 +8,7 @@ class TestDataGenerator:
     STOCK_SYMBOLS = ["VNM", "FPT", "ACB", "VCB", "TCB", "HPG", "MSN", "GAS", "BID", "CTG"]
     FUND_SYMBOLS = ["VFMVF1", "VFMVN30", "SSIAMCA", "DCDS", "VFB", "VDCS", "VEOF"]
     INDEX_SYMBOLS = ["VNINDEX", "HNXINDEX", "UPCOM"]
-    GOLD_SYMBOLS = ["SJC", "BTMC", "GOLD_MSN"]
+    GOLD_SYMBOLS = ["VN.GOLD", "VN.GOLD.C"]
     
     INVALID_SYMBOLS = ["INVALID123", "NOTFOUND", "FAKE_SYMBOL"]
     

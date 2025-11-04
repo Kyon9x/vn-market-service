@@ -2,9 +2,9 @@ import sys
 import os
 
 # Check Python version requirement (3.9+)
-if sys.version_info < (3, 10):
+if sys.version_info < (3, 9):
     raise RuntimeError(
-        f"Python 3.10 or higher is required. Current version: {sys.version_info.major}.{sys.version_info.minor}"
+        f"Python 3.9 or higher is required. Current version: {sys.version_info.major}.{sys.version_info.minor}"
     )
 
 # Configure vnstock timeout before importing clients
@@ -13,21 +13,21 @@ from app import vnstock_config
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from app.models import (
-    FundListResponse,
-    FundSearchResponse,
-    FundQuoteResponse,
-    FundHistoryResponse,
-    StockSearchResponse,
-    StockQuoteResponse,
-    StockHistoryResponse,
-    IndexQuoteResponse,
-    IndexHistoryResponse,
-    GoldSearchResponse,
-    GoldQuoteResponse,
-    GoldHistoryResponse,
-    HealthResponse,
-    SearchResponse,
-    SearchResult
+FundListResponse,
+FundSearchResponse,
+FundQuoteResponse,
+FundHistoryResponse,
+StockSearchResponse,
+StockQuoteResponse,
+StockHistoryResponse,
+IndexQuoteResponse,
+IndexHistoryResponse,
+GoldSearchResponse,
+GoldQuoteResponse,
+GoldHistoryResponse,
+HealthResponse,
+SearchResponse,
+SearchResult
 )
 from app.clients.fund_client import FundClient
 from app.clients.stock_client import StockClient
@@ -40,6 +40,16 @@ from app.cache.search_optimizer import get_search_optimizer
 from app.cache.background_manager import start_cache_background_tasks, stop_cache_background_tasks
 from app.cache.data_seeder import get_data_seeder
 from app.cache.gold_static_seeder import get_gold_seeder
+from app.utils.date_utils import validate_and_set_dates
+from app.utils.response_validator import ResponseValidator
+from app.utils.asset_type_detector import AssetTypeDetector
+from app.utils.error_handler import validate_client_available
+from app.constants import (
+    ASSET_TYPE_FUND, ASSET_TYPE_STOCK, ASSET_TYPE_INDEX, ASSET_TYPE_GOLD,
+    ASSET_CLASS_FUND, ASSET_CLASS_STOCK, ASSET_CLASS_INDEX, ASSET_CLASS_GOLD,
+    ASSET_SUB_CLASS_FUND, ASSET_SUB_CLASS_STOCK, ASSET_SUB_CLASS_INDEX, ASSET_SUB_CLASS_GOLD,
+    INDEX_SYMBOLS, DATA_SOURCE_VN_MARKET, CURRENCY_VND
+)
 import logging
 from datetime import datetime, timedelta
 import asyncio
@@ -51,73 +61,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def validate_asset_classification(asset_type: str, asset_class: str, asset_sub_class: str) -> bool:
-    """
-    Validate that the asset classification is correct based on the asset type.
-    
-    Args:
-        asset_type: The type of asset (STOCK, FUND, INDEX, GOLD, etc.)
-        asset_class: The asset class
-        asset_sub_class: The asset sub-class
-        
-    Returns:
-        bool: True if validation passes, False otherwise
-    """
-    asset_type = asset_type.upper()
-    
-    if asset_type == "STOCK":
-        return asset_class == "Equity" and asset_sub_class == "Stock"
-    elif asset_type == "FUND":
-        return asset_class == "Investment Fund" and asset_sub_class == "Mutual Fund"
-    elif asset_type == "INDEX":
-        return asset_class == "Index" and asset_sub_class == "Market Index"
-    elif asset_type == "GOLD":
-        return asset_class == "Commodity" and asset_sub_class == "Precious Metal"
-    else:
-        # For other asset types, we'll allow any classification
-        return True
-
-
-def validate_response_fields(response: dict, expected_asset_type: str) -> bool:
-    """
-    Validate that the response contains all required fields with correct values.
-    
-    Args:
-        response: The response dictionary to validate
-        expected_asset_type: The expected asset type
-        
-    Returns:
-        bool: True if validation passes, False otherwise
-    """
-    required_fields = ["asset_class", "asset_sub_class", "currency", "data_source"]
-    
-    # Check that all required fields are present
-    for field in required_fields:
-        if field not in response:
-            logger.warning(f"Missing required field: {field}")
-            return False
-    
-    # Validate asset classification
-    if not validate_asset_classification(
-        expected_asset_type, 
-        response.get("asset_class", ""), 
-        response.get("asset_sub_class", "")
-    ):
-        logger.warning(f"Invalid asset classification for {expected_asset_type}")
-        return False
-    
-    # Validate currency (should be VND for most assets, USD for MSN gold)
-    currency = response.get("currency")
-    if currency not in ["VND", "USD"]:
-        logger.warning(f"Invalid currency: {currency}")
-        return False
-    
-    # Validate data_source
-    if response.get("data_source") != "VN_MARKET":
-        logger.warning(f"Invalid data_source: {response.get('data_source')}")
-        return False
-    
-    return True
+# Validation functions are now centralized in app.utils.response_validator
 
 app = FastAPI(
     title="Vietnamese Market Data Service",
@@ -286,24 +230,22 @@ async def seed_gold_historical():
 @app.get("/funds", response_model=FundListResponse)
 async def get_funds_list():
     try:
-        if not fund_client:
-            raise HTTPException(status_code=503, detail="Fund service is temporarily unavailable. API timeout or connection issue detected.")
+        validate_client_available(fund_client, "Fund")
         funds = fund_client.get_funds_list()
         validated_funds = []
+
         for f in funds:
-            fund_dict = {
+            fund_dict = ResponseValidator.enrich_response_with_classification({
                 "symbol": f["symbol"],
                 "fund_name": f["fund_name"],
-                "asset_type": f["asset_type"],
-                "asset_class": "Investment Fund",
-                "asset_sub_class": "Mutual Fund",
-                "data_source": "VN_MARKET"
-            }
+                "asset_type": f["asset_type"]
+            }, ASSET_TYPE_FUND)
+
             # Validate the response
-            if not validate_response_fields(fund_dict, "FUND"):
+            if not ResponseValidator.validate_response_fields(fund_dict, ASSET_TYPE_FUND):
                 logger.warning(f"Validation failed for fund list item {f['symbol']}")
             validated_funds.append(fund_dict)
-        
+
         return FundListResponse(
             funds=validated_funds,
             total=len(validated_funds)
@@ -355,33 +297,19 @@ async def get_fund_history(
     end_date: str = Query(None, description="End date in YYYY-MM-DD format")
 ):
     try:
-        if not fund_client:
-            raise HTTPException(status_code=503, detail="Fund service is temporarily unavailable. API timeout or connection issue detected.")
+        validate_client_available(fund_client, "Fund")
         symbol = symbol.upper()
-        
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        
-        if not start_date:
-            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        
-        try:
-            datetime.strptime(start_date, "%Y-%m-%d")
-            datetime.strptime(end_date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid date format. Use YYYY-MM-DD"
-            )
-        
+
+        start_date, end_date = validate_and_set_dates(start_date, end_date)
+
         history = fund_client.get_fund_nav_history(symbol, start_date, end_date)
-        
+
         if not history:
             raise HTTPException(
                 status_code=404,
                 detail=f"No history found for {symbol}"
             )
-        
+
         return FundHistoryResponse(
             symbol=symbol,
             history=history
@@ -432,30 +360,17 @@ async def get_stock_history(
 ):
     try:
         symbol = symbol.upper()
-        
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        
-        if not start_date:
-            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        
-        try:
-            datetime.strptime(start_date, "%Y-%m-%d")
-            datetime.strptime(end_date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid date format. Use YYYY-MM-DD"
-            )
-        
+
+        start_date, end_date = validate_and_set_dates(start_date, end_date)
+
         history = stock_client.get_stock_history(symbol, start_date, end_date)
-        
+
         if not history:
             raise HTTPException(
                 status_code=404,
                 detail=f"No history found for {symbol}"
             )
-        
+
         return StockHistoryResponse(
             symbol=symbol,
             history=history
@@ -490,30 +405,17 @@ async def get_index_history(
 ):
     try:
         symbol = symbol.upper()
-        
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        
-        if not start_date:
-            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        
-        try:
-            datetime.strptime(start_date, "%Y-%m-%d")
-            datetime.strptime(end_date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid date format. Use YYYY-MM-DD"
-            )
-        
+
+        start_date, end_date = validate_and_set_dates(start_date, end_date)
+
         history = index_client.get_index_history(symbol, start_date, end_date)
-        
+
         if not history:
             raise HTTPException(
                 status_code=404,
                 detail=f"No history found for index {symbol}"
             )
-        
+
         return IndexHistoryResponse(
             symbol=symbol,
             history=history
@@ -628,21 +530,8 @@ async def get_gold_history(
         500: API error
     """
     try:
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        
-        if not start_date:
-            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        
-        try:
-            datetime.strptime(start_date, "%Y-%m-%d")
-            datetime.strptime(end_date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid date format. Use YYYY-MM-DD"
-            )
-        
+        start_date, end_date = validate_and_set_dates(start_date, end_date)
+
         history = gold_client.get_gold_history(symbol, start_date, end_date)
         
         if not history:
@@ -677,32 +566,22 @@ async def search_assets(
                 # Search by symbol (exact match)
                 stock_info = stock_client.search_stock(query_upper)
                 if stock_info:
-                    results.append({
+                    results.append(ResponseValidator.enrich_search_result({
                         "symbol": stock_info["symbol"],
                         "name": stock_info["company_name"],
-                        "asset_type": "STOCK",
-                        "asset_class": "Equity",
-                        "asset_sub_class": "Stock",
-                        "exchange": stock_info.get("exchange", ""),
-                        "currency": "VND",
-                        "data_source": "VN_MARKET"
-                    })
-                
+                        "exchange": stock_info.get("exchange", "")
+                    }, ASSET_TYPE_STOCK))
+
                 # Search by name (partial match)
                 stocks = stock_client.search_stocks_by_name(query_lower, limit=10)
                 for stock in stocks:
                     # Avoid duplicates
                     if not any(r["symbol"] == stock["symbol"] for r in results):
-                        results.append({
+                        results.append(ResponseValidator.enrich_search_result({
                             "symbol": stock["symbol"],
                             "name": stock["company_name"],
-                            "asset_type": "STOCK",
-                            "asset_class": "Equity",
-                            "asset_sub_class": "Stock",
-                            "exchange": stock.get("exchange", ""),
-                            "currency": "VND",
-                            "data_source": "VN_MARKET"
-                        })
+                            "exchange": stock.get("exchange", "")
+                        }, ASSET_TYPE_STOCK))
                 
                 return results
             except Exception as e:
@@ -717,16 +596,11 @@ async def search_assets(
                 
                 funds = fund_client.search_funds_by_name(query_lower, limit=10)
                 for fund in funds:
-                    results.append({
+                    results.append(ResponseValidator.enrich_search_result({
                         "symbol": fund["symbol"],
                         "name": fund["fund_name"],
-                        "asset_type": "FUND",
-                        "asset_class": "Investment Fund",
-                        "asset_sub_class": "Mutual Fund",
-                        "exchange": "VN",
-                        "currency": "VND",
-                        "data_source": "VN_MARKET"
-                    })
+                        "exchange": "VN"
+                    }, ASSET_TYPE_FUND))
                 
                 return results
             except Exception as e:
@@ -738,19 +612,13 @@ async def search_assets(
                 query_upper = query.upper()
                 results = []
                 
-                indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
+                indices = INDEX_SYMBOLS
                 for idx in indices:
                     if query_upper == idx or query_upper in idx or idx in query_upper:
-                        results.append({
+                        results.append(ResponseValidator.enrich_search_result({
                             "symbol": idx,
-                            "name": f"Vietnam {idx} Index",
-                            "asset_type": "INDEX",
-                            "asset_class": "Index",
-                            "asset_sub_class": "Market Index",
-                            "exchange": "HOSE" if idx.startswith("VN") else "HNX",
-                            "currency": "VND",
-                            "data_source": "VN_MARKET"
-                        })
+                            "name": f"Vietnam {idx} Index"
+                        }, ASSET_TYPE_INDEX))
                 
                 return results
             except Exception as e:
@@ -771,30 +639,24 @@ async def search_assets(
                 if is_gold_query:
                     gold_providers = gold_client.get_all_gold_providers()
                     for provider in gold_providers:
-                        results.append({
+                        results.append(ResponseValidator.enrich_search_result({
                             "symbol": provider["symbol"],
                             "name": provider["name"],
                             "asset_type": provider["asset_type"],
-                            "asset_class": "Commodity",
-                            "asset_sub_class": "Precious Metal",
                             "exchange": provider["exchange"],
-                            "currency": provider["currency"],
-                            "data_source": "VN_MARKET"
-                        })
+                            "currency": provider["currency"]
+                        }, ASSET_TYPE_GOLD))
                 else:
                     # Try to match specific gold symbol
                     gold_info = gold_client.search_gold(query_upper)
                     if gold_info:
-                        results.append({
+                        results.append(ResponseValidator.enrich_search_result({
                             "symbol": gold_info["symbol"],
                             "name": gold_info["name"],
                             "asset_type": gold_info["asset_type"],
-                            "asset_class": "Commodity",
-                            "asset_sub_class": "Precious Metal",
                             "exchange": gold_info["exchange"],
-                            "currency": gold_info["currency"],
-                            "data_source": "VN_MARKET"
-                        })
+                            "currency": gold_info["currency"]
+                        }, ASSET_TYPE_GOLD))
                 
                 return results
             except Exception as e:
@@ -845,63 +707,51 @@ async def get_history(
 ):
     try:
         symbol = symbol.upper()
-        
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        
-        if not start_date:
-            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        
-        # Handle gold symbols
-        try:
+        start_date, end_date = validate_and_set_dates(start_date, end_date)
+
+        # Detect asset type and route to appropriate endpoint
+        asset_type = AssetTypeDetector.detect_asset_type(symbol, {
+            'fund_client': fund_client,
+            'gold_client': gold_client
+        })
+
+        if asset_type == ASSET_TYPE_GOLD:
             history = gold_client.get_gold_history(symbol, start_date, end_date)
-            
             if history:
-                return {
+                return ResponseValidator.enrich_response_with_classification({
                     "symbol": symbol,
-                    "history": history,
-                    "asset_class": "Commodity",
-                    "asset_sub_class": "Precious Metal",
-                    "currency": "VND",
-                    "data_source": "VN_MARKET"
-                }
-        except:
-            pass
-        
-        indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
-        if symbol in indices:
+                    "history": history
+                }, ASSET_TYPE_GOLD)
+
+        elif asset_type == ASSET_TYPE_INDEX:
             result = await get_index_history(symbol, start_date, end_date)
-            # Ensure response includes all required fields
-            return {
+            return ResponseValidator.enrich_response_with_classification({
                 "symbol": result.symbol,
                 "history": [item.dict() for item in result.history],
-                "asset_class": "Index",
-                "asset_sub_class": "Market Index",
                 "currency": result.currency,
                 "data_source": result.data_source
-            }
-        
-        fund_symbols = [f["symbol"] for f in fund_client.get_funds_list()]
-        if symbol in fund_symbols:
-            result = await get_fund_history(symbol, start_date, end_date)
-            return {
-                "symbol": result.symbol,
-                "history": [item.dict() for item in result.history],
-                "asset_class": "Investment Fund",
-                "asset_sub_class": "Mutual Fund",
-                "currency": result.currency,
-                "data_source": result.data_source
-            }
-        
+            }, ASSET_TYPE_INDEX)
+
+        elif asset_type == ASSET_TYPE_FUND:
+            fund_symbols = [f["symbol"] for f in fund_client.get_funds_list()]
+            if symbol in fund_symbols:
+                result = await get_fund_history(symbol, start_date, end_date)
+                return ResponseValidator.enrich_response_with_classification({
+                    "symbol": result.symbol,
+                    "history": [item.dict() for item in result.history],
+                    "currency": result.currency,
+                    "data_source": result.data_source
+                }, ASSET_TYPE_FUND)
+
+        # Default to stock
         result = await get_stock_history(symbol, start_date, end_date)
-        return {
+        return ResponseValidator.enrich_response_with_classification({
             "symbol": result.symbol,
             "history": [item.dict() for item in result.history],
-            "asset_class": "Equity",
-            "asset_sub_class": "Stock",
             "currency": result.currency,
             "data_source": result.data_source
-        }
+        }, ASSET_TYPE_STOCK)
+
     except HTTPException:
         raise
     except Exception as e:
@@ -912,13 +762,13 @@ async def get_history(
 async def get_quote(symbol: str):
     """
     Universal quote endpoint - auto-detects asset type and returns latest price data.
-    
+
     Supports all asset types:
     - Stocks (e.g., VNM, FPT, MWG)
     - Funds (e.g., VESAF, VOF, EVF)
     - Indices (e.g., VNINDEX, VN30, HNX)
     - Gold (e.g., VN.GOLD, SJC.GOLD, BTMC.GOLD, MSN.GOLD)
-    
+
     Returns:
         Unified quote response with standardized OHLCV data structure:
         - open, high, low, close, adjclose, volume: Price data
@@ -931,51 +781,45 @@ async def get_quote(symbol: str):
     """
     try:
         symbol = symbol.upper()
-        
-        # Try gold first
-        try:
+
+        # Detect asset type and route to appropriate endpoint
+        asset_type = AssetTypeDetector.detect_asset_type(symbol, {
+            'fund_client': fund_client,
+            'gold_client': gold_client
+        })
+
+        if asset_type == ASSET_TYPE_GOLD:
             quote = gold_client.get_latest_quote(symbol)
             if quote:
-                return {
+                return ResponseValidator.enrich_response_with_classification({
                     **quote,
-                    "asset_type": "GOLD",
-                    "asset_class": "Commodity",
-                    "asset_sub_class": "Precious Metal"
-                }
-        except:
-            pass
-        
-        # Try indices
-        indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
-        if symbol in indices:
+                    "asset_type": ASSET_TYPE_GOLD
+                }, ASSET_TYPE_GOLD)
+
+        elif asset_type == ASSET_TYPE_INDEX:
             result = await get_index_quote(symbol)
-            return {
+            return ResponseValidator.enrich_response_with_classification({
                 **result.dict(),
-                "asset_type": "INDEX",
-                "asset_class": "Index",
-                "asset_sub_class": "Market Index"
-            }
-        
-        # Try funds
-        if fund_client:
-            fund_symbols = [f["symbol"] for f in fund_client.get_funds_list()]
-            if symbol in fund_symbols:
-                result = await get_fund_quote(symbol)
-                return {
-                    **result.dict(),
-                    "asset_type": "FUND",
-                    "asset_class": "Investment Fund",
-                    "asset_sub_class": "Mutual Fund"
-                }
-        
-        # Try stocks (default)
+                "asset_type": ASSET_TYPE_INDEX
+            }, ASSET_TYPE_INDEX)
+
+        elif asset_type == ASSET_TYPE_FUND:
+            if fund_client:
+                fund_symbols = [f["symbol"] for f in fund_client.get_funds_list()]
+                if symbol in fund_symbols:
+                    result = await get_fund_quote(symbol)
+                    return ResponseValidator.enrich_response_with_classification({
+                        **result.dict(),
+                        "asset_type": ASSET_TYPE_FUND
+                    }, ASSET_TYPE_FUND)
+
+        # Default to stock
         result = await get_stock_quote(symbol)
-        return {
+        return ResponseValidator.enrich_response_with_classification({
             **result.dict(),
-            "asset_type": "STOCK",
-            "asset_class": "Equity",
-            "asset_sub_class": "Stock"
-        }
+            "asset_type": ASSET_TYPE_STOCK
+        }, ASSET_TYPE_STOCK)
+
     except HTTPException:
         raise
     except Exception as e:
@@ -988,85 +832,65 @@ async def search_asset(symbol: str):
     try:
         symbol_upper = symbol.upper()
         logger.info(f"Processing symbol: {symbol_upper}")
-        
+
+        # Detect asset type and route to appropriate search
+        asset_type = AssetTypeDetector.detect_asset_type(symbol_upper, {
+            'fund_client': fund_client,
+            'gold_client': gold_client
+        })
+
         result_dict = None
-        asset_type = None
-        
-        # Handle gold symbols
-        try:
+
+        if asset_type == ASSET_TYPE_GOLD:
             gold_info = gold_client.search_gold(symbol)
             if gold_info:
-                result_dict = {
+                result_dict = ResponseValidator.enrich_response_with_classification({
                     "symbol": gold_info["symbol"],
                     "name": gold_info["name"],
                     "asset_type": gold_info["asset_type"],
-                    "asset_class": "Commodity",
-                    "asset_sub_class": "Precious Metal",
                     "exchange": gold_info["exchange"],
-                    "currency": gold_info["currency"],
-                    "data_source": "VN_MARKET"
-                }
-                asset_type = "GOLD"
-        except Exception as e:
-            logger.debug(f"Error searching gold: {e}")
-            pass
-        
-        if result_dict is None:
-            indices = ["VNINDEX", "VN30", "HNX", "HNX30", "UPCOM"]
-            if symbol_upper in indices:
-                result_dict = {
-                    "symbol": symbol_upper,
-                    "name": f"Vietnam {symbol_upper} Index",
-                    "asset_type": "INDEX",
-                    "asset_class": "Index",
-                    "asset_sub_class": "Market Index",
-                    "exchange": "HOSE" if symbol_upper.startswith("VN") else "HNX",
-                    "currency": "VND",
-                    "data_source": "VN_MARKET"
-                }
-                asset_type = "INDEX"
-        
-        if result_dict is None:
+                    "currency": gold_info["currency"]
+                }, ASSET_TYPE_GOLD)
+
+        elif asset_type == ASSET_TYPE_INDEX:
+            result_dict = ResponseValidator.enrich_response_with_classification({
+                "symbol": symbol_upper,
+                "name": f"Vietnam {symbol_upper} Index",
+                "asset_type": ASSET_TYPE_INDEX,
+                "exchange": "HOSE" if symbol_upper.startswith("VN") else "HNX"
+            }, ASSET_TYPE_INDEX)
+
+        elif asset_type == ASSET_TYPE_FUND:
             fund_info = fund_client.search_fund_by_symbol(symbol_upper)
             if fund_info:
-                result_dict = {
+                result_dict = ResponseValidator.enrich_response_with_classification({
                     "symbol": fund_info["symbol"],
                     "name": fund_info["fund_name"],
-                    "asset_type": "FUND",
-                    "asset_class": "Investment Fund",
-                    "asset_sub_class": "Mutual Fund",
-                    "exchange": "VN",
-                    "currency": "VND",
-                    "data_source": "VN_MARKET"
-                }
-                asset_type = "FUND"
-        
-        if result_dict is None:
+                    "asset_type": ASSET_TYPE_FUND,
+                    "exchange": "VN"
+                }, ASSET_TYPE_FUND)
+
+        else:  # Default to stock
             stock_info = stock_client.search_stock(symbol_upper)
             if stock_info:
                 logger.info(f"Found stock info for {symbol_upper}: {stock_info}")
-                result_dict = {
+                result_dict = ResponseValidator.enrich_response_with_classification({
                     "symbol": stock_info["symbol"],
                     "name": stock_info["company_name"],
-                    "asset_type": "STOCK",
-                    "asset_class": "Equity",
-                    "asset_sub_class": "Stock",
-                    "exchange": stock_info.get("exchange", ""),
-                    "currency": "VND",
-                    "data_source": "VN_MARKET"
-                }
-                asset_type = "STOCK"
-        
+                    "asset_type": ASSET_TYPE_STOCK,
+                    "exchange": stock_info.get("exchange", "")
+                }, ASSET_TYPE_STOCK)
+
         if result_dict is None:
             raise HTTPException(status_code=404, detail=f"Asset {symbol} not found")
-        
+
         # Validate the response
-        if not validate_response_fields(result_dict, asset_type):
+        if not ResponseValidator.validate_response_fields(result_dict, asset_type):
             logger.warning(f"Validation failed for asset {symbol}")
-        
+
         logger.info(f"Returning SearchResult: {result_dict}")
         return result_dict
-        
+
     except HTTPException:
         raise
     except Exception as e:

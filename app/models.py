@@ -1,30 +1,35 @@
 from pydantic import BaseModel
 from typing import List, Optional
 from enum import Enum
+from app.constants import (
+    ASSET_CLASS_FUND, ASSET_CLASS_STOCK, ASSET_CLASS_INDEX, ASSET_CLASS_GOLD,
+    ASSET_SUB_CLASS_FUND, ASSET_SUB_CLASS_STOCK, ASSET_SUB_CLASS_INDEX, ASSET_SUB_CLASS_GOLD,
+    CURRENCY_VND, CURRENCY_USD, DATA_SOURCE_VN_MARKET
+)
 
 
 class AssetClass(str, Enum):
-    COMMODITY = "Commodity"
-    EQUITY = "Equity"
-    INVESTMENT_FUND = "Investment Fund"
-    INDEX = "Index"
+    COMMODITY = ASSET_CLASS_GOLD
+    EQUITY = ASSET_CLASS_STOCK
+    INVESTMENT_FUND = ASSET_CLASS_FUND
+    INDEX = ASSET_CLASS_INDEX
     OTHER = "Other"
 
 
 class AssetSubClass(str, Enum):
-    PRECIOUS_METAL = "Precious Metal"
-    STOCK = "Stock"
-    MUTUAL_FUND = "Mutual Fund"
-    MARKET_INDEX = "Market Index"
+    PRECIOUS_METAL = ASSET_SUB_CLASS_GOLD
+    STOCK = ASSET_SUB_CLASS_STOCK
+    MUTUAL_FUND = ASSET_SUB_CLASS_FUND
+    MARKET_INDEX = ASSET_SUB_CLASS_INDEX
     OTHER = "Other"
 
 class FundBasicInfo(BaseModel):
     symbol: str
     fund_name: str
     asset_type: str
-    asset_class: str = "Investment Fund"
-    asset_sub_class: str = "Mutual Fund"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_FUND
+    asset_sub_class: str = ASSET_SUB_CLASS_FUND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class FundListResponse(BaseModel):
     funds: List[FundBasicInfo]
@@ -37,10 +42,10 @@ class FundSearchResponse(BaseModel):
     management_company: Optional[str] = None
     inception_date: Optional[str] = None
     nav_per_unit: Optional[float] = None
-    asset_class: str = "Investment Fund"
-    asset_sub_class: str = "Mutual Fund"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_FUND
+    asset_sub_class: str = ASSET_SUB_CLASS_FUND
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class FundQuoteResponse(BaseModel):
     symbol: str
@@ -52,10 +57,10 @@ class FundQuoteResponse(BaseModel):
     volume: float = 0.0
     nav: float
     date: str
-    asset_class: str = "Investment Fund"
-    asset_sub_class: str = "Mutual Fund"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_FUND
+    asset_sub_class: str = ASSET_SUB_CLASS_FUND
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class FundHistoryItem(BaseModel):
     date: str
@@ -70,10 +75,10 @@ class FundHistoryItem(BaseModel):
 class FundHistoryResponse(BaseModel):
     symbol: str
     history: List[FundHistoryItem]
-    asset_class: str = "Investment Fund"
-    asset_sub_class: str = "Mutual Fund"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_FUND
+    asset_sub_class: str = ASSET_SUB_CLASS_FUND
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class StockSearchResponse(BaseModel):
     symbol: str
@@ -81,10 +86,10 @@ class StockSearchResponse(BaseModel):
     exchange: str
     industry: Optional[str] = None
     company_type: Optional[str] = None
-    asset_class: str = "Equity"
-    asset_sub_class: str = "Stock"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_STOCK
+    asset_sub_class: str = ASSET_SUB_CLASS_STOCK
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class StockQuoteResponse(BaseModel):
     symbol: str
@@ -95,10 +100,10 @@ class StockQuoteResponse(BaseModel):
     adjclose: float
     volume: float
     date: str
-    asset_class: str = "Equity"
-    asset_sub_class: str = "Stock"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_STOCK
+    asset_sub_class: str = ASSET_SUB_CLASS_STOCK
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class StockHistoryItem(BaseModel):
     date: str
@@ -113,20 +118,20 @@ class StockHistoryItem(BaseModel):
 class StockHistoryResponse(BaseModel):
     symbol: str
     history: List[StockHistoryItem]
-    asset_class: str = "Equity"
-    asset_sub_class: str = "Stock"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_STOCK
+    asset_sub_class: str = ASSET_SUB_CLASS_STOCK
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class IndexSearchResponse(BaseModel):
     symbol: str
     name: str
     asset_type: str = "INDEX"
-    asset_class: str = "Index"
-    asset_sub_class: str = "Market Index"
+    asset_class: str = ASSET_CLASS_INDEX
+    asset_sub_class: str = ASSET_SUB_CLASS_INDEX
     exchange: str
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 
 class IndexQuoteResponse(BaseModel):
@@ -138,10 +143,10 @@ class IndexQuoteResponse(BaseModel):
     adjclose: float
     volume: float
     date: str
-    asset_class: str = "Index"
-    asset_sub_class: str = "Market Index"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_INDEX
+    asset_sub_class: str = ASSET_SUB_CLASS_INDEX
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class IndexHistoryItem(BaseModel):
     date: str
@@ -156,10 +161,10 @@ class IndexHistoryItem(BaseModel):
 class IndexHistoryResponse(BaseModel):
     symbol: str
     history: List[IndexHistoryItem]
-    asset_class: str = "Index"
-    asset_sub_class: str = "Market Index"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_INDEX
+    asset_sub_class: str = ASSET_SUB_CLASS_INDEX
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class HealthResponse(BaseModel):
     status: str
@@ -173,8 +178,8 @@ class SearchResult(BaseModel):
     asset_class: str = ""
     asset_sub_class: str = ""
     exchange: str
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class SearchResponse(BaseModel):
     results: List[SearchResult]
@@ -186,13 +191,13 @@ class GoldSearchResponse(BaseModel):
     provider: str
     provider_name: str
     asset_type: str
-    asset_class: str = "Commodity"
-    asset_sub_class: str = "Precious Metal"
+    asset_class: str = ASSET_CLASS_GOLD
+    asset_sub_class: str = ASSET_SUB_CLASS_GOLD
     exchange: str
-    currency: str = "VND"
+    currency: str = CURRENCY_VND
     unit: Optional[str] = None
     unit_description: Optional[str] = None
-    data_source: str = "VN_MARKET"
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class GoldQuoteResponse(BaseModel):
     symbol: str
@@ -205,10 +210,10 @@ class GoldQuoteResponse(BaseModel):
     buy_price: Optional[float] = None
     sell_price: Optional[float] = None
     date: str
-    asset_class: str = "Commodity"
-    asset_sub_class: str = "Precious Metal"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_GOLD
+    asset_sub_class: str = ASSET_SUB_CLASS_GOLD
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 
 class GoldHistoryItem(BaseModel):
     symbol: str
@@ -226,8 +231,8 @@ class GoldHistoryItem(BaseModel):
 class GoldHistoryResponse(BaseModel):
     symbol: str
     history: List[GoldHistoryItem]
-    asset_class: str = "Commodity"
-    asset_sub_class: str = "Precious Metal"
-    currency: str = "VND"
-    data_source: str = "VN_MARKET"
+    asset_class: str = ASSET_CLASS_GOLD
+    asset_sub_class: str = ASSET_SUB_CLASS_GOLD
+    currency: str = CURRENCY_VND
+    data_source: str = DATA_SOURCE_VN_MARKET
 

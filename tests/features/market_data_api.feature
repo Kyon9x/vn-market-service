@@ -66,6 +66,6 @@ Feature: Market Data API Endpoints
 
     Examples:
       | asset_type | query   | history_days |
-      | stocks     | VNM     | 30          |
-      | funds      | DCDS    | 30          |
-      | gold       | SJC     | 30          |
+      | stocks     | Vina    | 30           |
+      | funds      | DCD    | 30           |
+      | gold       | VN GOLD | 30           |
