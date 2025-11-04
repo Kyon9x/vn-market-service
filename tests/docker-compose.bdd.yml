@@ -1,0 +1,38 @@
+services:
+  vn-market-service:
+    container_name: vn-market-service-test
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8766:8765"
+    volumes:
+      - ./app:/app/app
+      - ./db:/app/db
+    environment:
+      - VN_MARKET_SERVICE_HOST=0.0.0.0
+      - VN_MARKET_SERVICE_PORT=8765
+      - TZ=Asia/Ho_Chi_Minh
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  bdd-tests:
+    container_name: vn-market-service-bdd-tests
+    build:
+      context: .
+      dockerfile: Dockerfile.bdd
+    depends_on:
+      vn-market-service:
+        condition: service_healthy
+    environment:
+      - TEST_BASE_URL=http://vn-market-service:8765
+    volumes:
+      - ./test/features:/app/test/features
+      - ./reports:/app/reports
+    command: behave --format=json5 --outfile=/app/reports/test_report.json5 --format=pretty test/features
+    restart: "no"
