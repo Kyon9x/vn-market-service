@@ -1,3 +1,5 @@
+import sys
+print("🐛 FILE LOADED: when_steps.py", file=sys.stderr)
 from behave import when
 from support.data_utils import TestDataGenerator
 
@@ -83,11 +85,16 @@ def step_select_vnindex(context):
     
     assert vnindex_found, "VNINDEX should be found in search results"
 
-
 @when('I request the latest index value')
 def step_request_index_quote(context):
     """Request latest index value"""
     context.quote_response = context.api.get_quote(context.selected_symbol)
+    if context.quote_response and "close" in context.quote_response:
+        print(f"🐛 TEST LOG: Index quote close value: {context.quote_response['close']}")
+    else:
+        print(f"🐛 TEST LOG: Index quote response: {context.quote_response}")
+
+
 
 
 @when('I request historical index data')
@@ -178,7 +185,13 @@ def step_request_market_data(context):
 @when('I request the latest data for that symbol')
 def step_request_latest_data_for_symbol(context):
     """Request latest data for the selected symbol"""
+    print(f"🐛 DEBUG: Requesting quote for symbol: {context.selected_symbol}", file=sys.stderr)
     context.quote_response = context.api.get_quote(context.selected_symbol)
+    print(f"🐛 DEBUG: Quote response received: {bool(context.quote_response)}", file=sys.stderr)
+    if context.quote_response and "close" in context.quote_response:
+        print(f"🐛 TEST LOG: Quote close value: {context.quote_response['close']}", file=sys.stderr)
+    else:
+        print(f"🐛 TEST LOG: Quote response: {context.quote_response}", file=sys.stderr)
 
 
 @when('I request the historical data for the past 365 days for that symbol')
@@ -198,12 +211,14 @@ def step_request_historical_data_for_symbol(context):
 @when('I request the historical data for the past {days:d} days for that symbol')
 def step_request_historical_data_with_days(context, days):
     """Request historical data for specified number of days for the selected symbol"""
+    print(f"🐛 DEBUG: Requesting history for {days} days, symbol: {context.selected_symbol}", file=sys.stderr)
     context.history_response = context.api.get_history(context.selected_symbol, days=days)
+    print(f"🐛 DEBUG: History response received: {bool(context.history_response)}", file=sys.stderr)
     if context.history_response and "history" in context.history_response and context.history_response["history"]:
         latest_record = context.history_response["history"][-1]  # Most recent
         if "close" in latest_record:
-            print(f"🐛 TEST LOG: Custom days ({days}) history latest close value: {latest_record['close']}")
+            print(f"🐛 TEST LOG: Custom days ({days}) history latest close value: {latest_record['close']}", file=sys.stderr)
         else:
-            print(f"🐛 TEST LOG: Custom days ({days}) history latest record: {latest_record}")
+            print(f"🐛 TEST LOG: Custom days ({days}) history latest record: {latest_record}", file=sys.stderr)
     else:
-        print(f"🐛 TEST LOG: Custom days ({days}) history response: {context.history_response}")
+        print(f"🐛 TEST LOG: Custom days ({days}) history response: {context.history_response}", file=sys.stderr)

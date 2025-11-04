@@ -1,3 +1,5 @@
+import sys
+print("🐛 FILE LOADED: given_steps.py", file=sys.stderr)
 from behave import given
 from support.api_client import MarketDataAPI
 from support.data_utils import TestDataGenerator
@@ -54,6 +56,9 @@ def step_search_asset_type(context, asset_type, query):
     context.search_results = context.api.search(query)
 
 
+import logging
+logger = logging.getLogger(__name__)
+
 @given('I search for {asset_type} with random query')
 def step_search_asset_type_random(context, asset_type):
     """Search for specific asset type with random query"""
@@ -61,6 +66,8 @@ def step_search_asset_type_random(context, asset_type):
         context.search_query = TestDataGenerator.get_random_stock_symbol()
     elif asset_type.lower() == "funds":
         context.search_query = TestDataGenerator.get_random_fund_symbol()
+    elif asset_type.lower() == "indices":
+        context.search_query = TestDataGenerator.get_random_index_symbol()
     elif asset_type.lower() == "gold":
         context.search_query = TestDataGenerator.get_random_gold_symbol()
     else:

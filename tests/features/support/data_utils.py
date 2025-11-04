@@ -6,7 +6,7 @@ class TestDataGenerator:
     """Generate test data for BDD scenarios"""
     
     STOCK_SYMBOLS = ["VNM", "FPT", "ACB", "VCB", "TCB", "HPG", "MSN", "GAS", "BID", "CTG"]
-    FUND_SYMBOLS = [ "SSIAMCA", "DCDS", "VCB", "VDCS", "VEOF", "VESAF", "VNDBF", "BVFED", "MAMF"]
+    FUND_SYMBOLS = [ "SSISCA", "DCDS", "VCB", "VDCS", "VEOF", "VESAF", "VNDBF", "BVFED", "MAMF"]
     INDEX_SYMBOLS = ["VNINDEX", "HNXINDEX", "UPCOM", "VN30", "HNX30"]
     GOLD_SYMBOLS = ["VN.GOLD", "VN.GOLD.C"]
     

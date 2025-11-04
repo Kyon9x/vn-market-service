@@ -7,7 +7,6 @@ services:
     ports:
       - "8765:8765"
     volumes:
-      - ./db:/app/db  # Persist database between container restarts
       - ./logs:/app/logs  # Persist application logs
     environment:
       - VN_MARKET_SERVICE_HOST=0.0.0.0

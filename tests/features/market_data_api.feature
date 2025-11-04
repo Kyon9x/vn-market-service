@@ -87,3 +87,15 @@ Feature: Market Data API Endpoints
     When I request the historical data for the past 30 days for that symbol
     Then I should receive valid historical data for the selected symbol
     And the data should not be empty
+  
+  @regression
+  Scenario: Index data retrieval with random data
+    Given I search for indices with random query
+    When I select the first search result to get the symbol
+    Then the symbol should not be empty
+    When I request the latest data for that symbol
+    Then I should receive valid latest data for the selected symbol
+    And the data should contain relevant information
+    When I request the historical data for the past 30 days for that symbol
+    Then I should receive valid historical data for the selected symbol
+    And the data should not be empty
