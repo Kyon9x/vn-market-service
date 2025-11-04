@@ -827,9 +827,14 @@ async def get_history(
             'gold_client': gold_client
         })
 
+        # Check if we should include today's latest quote
+        today = datetime.now().strftime("%Y-%m-%d")
+        should_include_today = (end_date == today or end_date >= today)
+
         if asset_type == ASSET_TYPE_GOLD:
             history = gold_client.get_gold_history(symbol, start_date, end_date)
             if history:
+                # For gold, the history method should already include today's data if available
                 return ResponseValidator.enrich_response_with_classification({
                     "symbol": symbol,
                     "history": history
@@ -837,9 +842,37 @@ async def get_history(
 
         elif asset_type == ASSET_TYPE_INDEX:
             result = await get_index_history(symbol, start_date, end_date)
+            history_data = [item.dict() for item in result.history]
+
+            # Check if we need to include today's latest quote for index
+            if should_include_today and index_client:
+                try:
+                    latest_quote = index_client.get_latest_quote(symbol)
+                    if latest_quote and latest_quote.get('date') == today:
+                        # Check if today's data is already in history
+                        has_today = any(record.get('date') == today for record in history_data)
+                        if not has_today:
+                            # Convert latest quote to history format
+                            history_record = {
+                                "symbol": symbol,
+                                "date": latest_quote.get('date'),
+                                "nav": latest_quote.get('close', latest_quote.get('nav')),
+                                "open": latest_quote.get('open'),
+                                "high": latest_quote.get('high'),
+                                "low": latest_quote.get('low'),
+                                "close": latest_quote.get('close'),
+                                "adjclose": latest_quote.get('adjclose'),
+                                "volume": latest_quote.get('volume')
+                            }
+                            history_data.append(history_record)
+                            # Sort by date
+                            history_data.sort(key=lambda x: x.get('date', ''), reverse=False)
+                except Exception as e:
+                    logger.debug(f"Could not include today's quote for {symbol}: {e}")
+
             return ResponseValidator.enrich_response_with_classification({
                 "symbol": result.symbol,
-                "history": [item.dict() for item in result.history],
+                "history": history_data,
                 "currency": result.currency,
                 "data_source": result.data_source
             }, ASSET_TYPE_INDEX)
@@ -848,18 +881,63 @@ async def get_history(
             fund_symbols = [f["symbol"] for f in fund_client.get_funds_list()]
             if symbol in fund_symbols:
                 result = await get_fund_history(symbol, start_date, end_date)
+                history_data = [item.dict() for item in result.history]
+
+                # Check if we need to include today's latest quote for fund
+                if should_include_today and fund_client:
+                    try:
+                        latest_quote = fund_client.get_latest_nav(symbol)
+                        if latest_quote and latest_quote.get('date') == today:
+                            # Check if today's data is already in history
+                            has_today = any(record.get('date') == today for record in history_data)
+                            if not has_today:
+                                history_data.append(latest_quote)
+                                # Sort by date
+                                history_data.sort(key=lambda x: x.get('date', ''), reverse=False)
+                    except Exception as e:
+                        logger.debug(f"Could not include today's quote for {symbol}: {e}")
+
                 return ResponseValidator.enrich_response_with_classification({
                     "symbol": result.symbol,
-                    "history": [item.dict() for item in result.history],
+                    "history": history_data,
                     "currency": result.currency,
                     "data_source": result.data_source
                 }, ASSET_TYPE_FUND)
 
         # Default to stock
         result = await get_stock_history(symbol, start_date, end_date)
+        history_data = [item.dict() for item in result.history]
+
+        # Check if we need to include today's latest quote for stock
+        if should_include_today and stock_client:
+            try:
+                latest_quote = stock_client.get_latest_quote(symbol)
+                if latest_quote and latest_quote.get('date') == today:
+                    # Check if today's data is already in history
+                    has_today = any(record.get('date') == today for record in history_data)
+                    if not has_today:
+                        # Convert latest quote to history format
+                        history_record = {
+                            "symbol": symbol,
+                            "date": latest_quote.get('date'),
+                            "nav": latest_quote.get('close', latest_quote.get('nav')),
+                            "open": latest_quote.get('open'),
+                            "high": latest_quote.get('high'),
+                            "low": latest_quote.get('low'),
+                            "close": latest_quote.get('close'),
+                            "adjclose": latest_quote.get('adjclose'),
+                            "volume": latest_quote.get('volume')
+                        }
+                        history_data.append(history_record)
+                        # Sort by date
+                        history_data.sort(key=lambda x: x.get('date', ''), reverse=False)
+                        logger.debug(f"Included today's latest quote for {symbol} in history")
+            except Exception as e:
+                logger.debug(f"Could not include today's quote for {symbol}: {e}")
+
         return ResponseValidator.enrich_response_with_classification({
             "symbol": result.symbol,
-            "history": [item.dict() for item in result.history],
+            "history": history_data,
             "currency": result.currency,
             "data_source": result.data_source
         }, ASSET_TYPE_STOCK)
