@@ -895,17 +895,24 @@ async def get_history(
             if symbol in fund_symbols:
                 result = await get_fund_history(symbol, start_date, end_date)
                 history_data = [item.dict() for item in result.history]
-                try:
-                    latest_quote = fund_client.get_latest_nav(symbol)
-                    if latest_quote and latest_quote.get('date') == today:
-                        # Check if today's data is already in history
-                        has_today = any(record.get('date') == today for record in history_data)
-                        if not has_today:
-                            history_data.append(latest_quote)
-                            # Sort by date
-                            history_data.sort(key=lambda x: x.get('date', ''), reverse=False)
-                except Exception as e:
-                    logger.debug(f"Could not include today's quote for {symbol}: {e}")
+                
+                # Only fetch latest quote if after market close (16:00) on weekdays
+                from app.utils.market_time_utils import is_after_market_close
+                
+                if is_after_market_close():
+                    try:
+                        latest_quote = fund_client.get_latest_nav(symbol)
+                        if latest_quote and latest_quote.get('date') == today:
+                            # Check if today's data is already in history
+                            has_today = any(record.get('date') == today for record in history_data)
+                            if not has_today:
+                                history_data.append(latest_quote)
+                                # Sort by date
+                                history_data.sort(key=lambda x: x.get('date', ''), reverse=False)
+                    except Exception as e:
+                        logger.debug(f"Could not include today's quote for {symbol}: {e}")
+                else:
+                    logger.debug(f"Skipping latest quote fetch for {symbol} - before market close (16:00) or weekend")
 
                 return ResponseValidator.enrich_response_with_classification({
                     "symbol": result.symbol,

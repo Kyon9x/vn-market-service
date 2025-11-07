@@ -25,6 +25,17 @@ def get_latest_friday(dt: Optional[datetime] = None) -> datetime:
     days_since_friday = (dt.weekday() - 4) % 7  # Friday=4
     return dt - timedelta(days=days_since_friday)
 
+def is_after_market_close(dt: Optional[datetime] = None) -> bool:
+    """Check if current time is after market close (16:00) on a weekday."""
+    if dt is None:
+        dt = datetime.now()
+    
+    # Only check time on weekdays
+    if not is_weekday(dt):
+        return False
+    
+    return dt.hour >= 16  # After 4 PM
+
 def should_update_data(
     timestamp: str, 
     threshold_minutes: int = 30,
