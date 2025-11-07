@@ -65,7 +65,7 @@ class BackgroundCacheManager:
         while self._running:
             try:
                 await self._refresh_asset_data()
-                await asyncio.sleep(3600)  # Refresh every hour
+                await asyncio.sleep(36000)  # Refresh every 10 hours
             except asyncio.CancelledError:
                 break
             except Exception as e:

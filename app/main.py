@@ -124,6 +124,11 @@ async def timeout_middleware(request: Request, call_next):
 @app.middleware("http")
 async def ip_rate_limit_middleware(request: Request, call_next):
     """Apply per-IP rate limiting to all requests, excluding health check endpoints and test requests."""
+    # Skip rate limiting entirely in local dev mode
+    from app.config import LOCAL_DEV_MODE
+    if LOCAL_DEV_MODE:
+        return await call_next(request)
+    
     # Skip rate limiting for health check and monitoring endpoints
     if request.url.path in ["/health", "/cache/stats", "/cache/lazy-fetch/status", "/cache/seed/progress", "/cache/ip-rate-limits"]:
         return await call_next(request)

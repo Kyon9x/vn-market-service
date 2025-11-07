@@ -4,6 +4,9 @@ PORT = int(os.getenv("VN_MARKET_SERVICE_PORT", "8765"))
 HOST = os.getenv("VN_MARKET_SERVICE_HOST", "127.0.0.1")
 CORS_ORIGINS = ["tauri://localhost", "http://localhost:1420"]
 
+# Local development mode - set to True to disable rate limiting
+LOCAL_DEV_MODE = os.getenv("LOCAL_DEV_MODE", "false").lower() == "true"
+
 # ============================================================================
 # Smart Caching Configuration
 # ============================================================================
@@ -34,7 +37,7 @@ RATE_LIMIT_CONFIG = {
     'max_calls_per_hour': 36000,          # Maximum API calls per hour
     'delay_between_calls_ms': 100,      # Minimum delay between calls (milliseconds)
     'queue_max_size': 100,              # Maximum queued requests
-    'enable_throttling': True           # Enable rate limit protection
+    'enable_throttling': not LOCAL_DEV_MODE  # Disable for local dev
 }
 
 # Database Configuration
@@ -49,7 +52,7 @@ IP_RATE_LIMIT_CONFIG = {
     'max_calls_per_minute': 60,          # Maximum API calls per minute per IP
     'max_calls_per_hour': 600,           # Maximum API calls per hour per IP
     'delay_between_calls_ms': 200,       # Minimum delay between calls per IP (milliseconds)
-    'enable_throttling': True,           # Enable IP-based rate limiting
+    'enable_throttling': not LOCAL_DEV_MODE,  # Disable for local dev
     'max_tracked_ips': 10000,            # Maximum number of IPs to track (memory protection)
     'cleanup_interval_seconds': 300      # Cleanup inactive IPs every 5 minutes
 }
